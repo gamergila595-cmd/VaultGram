@@ -528,7 +528,7 @@ public final class MainActivity extends Activity implements TelegramRepository.L
                         if (bitmap != full) full.recycle();
                     }
                 } catch (Exception ignored) { }
-                finally { retriever.release(); }
+                finally { try { retriever.release(); } catch (Exception ignored) { } }
                 Bitmap finalBitmap = bitmap;
                 runOnUiThread(() -> {
                     if (adapter != this || !galleryVisible) return;
