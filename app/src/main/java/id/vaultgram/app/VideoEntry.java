@@ -1,6 +1,7 @@
 package id.vaultgram.app;
 
 import org.drinkless.tdlib.TdApi;
+import android.net.Uri;
 import java.io.File;
 import java.text.DateFormat;
 import java.util.Date;
@@ -16,6 +17,7 @@ final class VideoEntry {
     final byte[] preview;
     TdApi.File video;
     TdApi.File thumb;
+    Uri externalUri;
 
     VideoEntry(long messageId, int date, String name, int duration, TdApi.File video,
                TdApi.File thumb, byte[] preview) {
@@ -36,6 +38,8 @@ final class VideoEntry {
     }
 
     String localPath() { return complete() ? video.local.path : ""; }
+    boolean available() { return complete() || externalUri != null; }
+    Uri externalUri() { return externalUri; }
 
     int progress() {
         if (complete()) return 100;
