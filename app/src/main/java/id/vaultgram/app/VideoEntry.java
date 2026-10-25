@@ -1,8 +1,8 @@
 package id.vaultgram.app;
 
 import org.drinkless.tdlib.TdApi;
-import android.net.Uri;
 import java.io.File;
+import android.net.Uri;
 import java.text.DateFormat;
 import java.util.Date;
 import java.util.Locale;
@@ -17,7 +17,7 @@ final class VideoEntry {
     final byte[] preview;
     TdApi.File video;
     TdApi.File thumb;
-    Uri externalUri;
+    String exportedUri;
 
     VideoEntry(long messageId, int date, String name, int duration, TdApi.File video,
                TdApi.File thumb, byte[] preview) {
@@ -31,15 +31,20 @@ final class VideoEntry {
         this.preview = preview;
     }
 
-    boolean complete() {
+    boolean fileComplete() {
         return video != null && video.local != null && video.local.isDownloadingCompleted
             && video.local.path != null && !video.local.path.isEmpty()
             && new File(video.local.path).isFile();
     }
 
-    String localPath() { return complete() ? video.local.path : ""; }
-    boolean available() { return complete() || externalUri != null; }
-    Uri externalUri() { return externalUri; }
+    boolean complete() { return fileComplete() || (exportedUri != null && !exportedUri.isEmpty()); }
+
+    String localPath() { return fileComplete() ? video.local.path : ""; }
+
+    Uri playableUri() {
+        if (fileComplete()) return Uri.fromFile(new File(video.local.path));
+        return exportedUri == null ? null : Uri.parse(exportedUri);
+    }
 
     int progress() {
         if (complete()) return 100;

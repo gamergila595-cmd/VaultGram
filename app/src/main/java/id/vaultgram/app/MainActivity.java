@@ -7,6 +7,9 @@ import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
+import android.Manifest;
+import android.content.pm.PackageManager;
+import android.media.MediaMetadataRetriever;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
@@ -37,6 +40,10 @@ import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /** Android UI built with the SDK view system; only one TDLib bot conversation appears. */
 public final class MainActivity extends Activity implements TelegramRepository.Listener {
@@ -46,12 +53,13 @@ public final class MainActivity extends Activity implements TelegramRepository.L
     private static final int TEXT = Color.rgb(240, 244, 251);
     private static final int MUTED = Color.rgb(148, 163, 184);
     private static final int ACCENT = Color.rgb(107, 224, 202);
+    private static final int SCAN_PERMISSION = 614;
     private final int[] filters = {0, 1, 2};
     private FrameLayout root;
     private TelegramRepository repo;
     private TelegramRepository.Stage currentStage;
     private boolean galleryVisible;
-    private TextView botText, accountText, statsText, statusText;
+    private TextView botText, accountText, statsText, statusText, autoWifiText;
     private TextView[] filterTabs;
     private GalleryAdapter adapter;
     private int filter;
@@ -74,8 +82,18 @@ public final class MainActivity extends Activity implements TelegramRepository.L
         }
     }
 
+    @Override protected void onResume() {
+        super.onResume();
+        if (repo != null) {
+            repo.bind(this);
+            if (galleryVisible) refreshGrid();
+        }
+        AppLock.gate(this);
+    }
+
     @Override protected void onDestroy() {
-        if (repo != null) repo.bind(null);
+        if (repo != null) repo.unbind(this);
+        if (adapter != null) adapter.close();
         super.onDestroy();
     }
 
@@ -105,7 +123,8 @@ public final class MainActivity extends Activity implements TelegramRepository.L
 
     private void renderAuth(TelegramRepository.Stage stage, String detail) {
         galleryVisible = false;
-        botText = accountText = statsText = statusText = null;
+        botText = accountText = statsText = statusText = autoWifiText = null;
+        if (adapter != null) adapter.close();
         adapter = null;
         root.removeAllViews();
         ScrollView scroll = new ScrollView(this);
@@ -210,6 +229,7 @@ public final class MainActivity extends Activity implements TelegramRepository.L
     }
 
     private void renderGallery() {
+        if (adapter != null) adapter.close();
         galleryVisible = true;
         root.removeAllViews();
         LinearLayout page = column();
@@ -229,6 +249,13 @@ public final class MainActivity extends Activity implements TelegramRepository.L
         header.addView(brand, brandLp);
         brand.addView(label("VaultGram", 24, TEXT, true));
         brand.addView(label("GALERI VIDEO BOT", 10, ACCENT, true));
+        TextView lock = label("Kunci", 12, ACCENT, true);
+        lock.setGravity(Gravity.CENTER);
+        lock.setBackground(round(PANEL, 14));
+        LinearLayout.LayoutParams lockLp = new LinearLayout.LayoutParams(dp(56), dp(44));
+        lockLp.rightMargin = dp(8);
+        header.addView(lock, lockLp);
+        lock.setOnClickListener(v -> AppLock.change(this));
         TextView refresh = label("↻", 30, TEXT, true);
         refresh.setGravity(Gravity.CENTER);
         refresh.setBackground(round(PANEL, 14));
@@ -263,11 +290,35 @@ public final class MainActivity extends Activity implements TelegramRepository.L
         source.addView(choose);
         source.setOnClickListener(v -> promptBot());
 
-        statsText = label("0 video", 15, MUTED, false);
+        LinearLayout autoRow = row();
+        autoRow.setGravity(Gravity.CENTER_VERTICAL);
+        autoRow.setPadding(dp(13), dp(11), dp(13), dp(11));
+        autoRow.setBackground(round(PANEL, 14));
+        LinearLayout.LayoutParams autoLp = new LinearLayout.LayoutParams(-1, -2);
+        autoLp.topMargin = dp(11);
+        page.addView(autoRow, autoLp);
+        TextView description = label("Auto-download video baru", 12, TEXT, true);
+        autoRow.addView(description, new LinearLayout.LayoutParams(0, -2, 1));
+        autoWifiText = label("", 11, ACCENT, true);
+        autoRow.addView(autoWifiText);
+        autoRow.setOnClickListener(v -> {
+            repo.setAutoWifiEnabled(!repo.autoWifiEnabled());
+            updateAutoWifi();
+        });
+        updateAutoWifi();
+
+        LinearLayout scanRow = row();
+        scanRow.setGravity(Gravity.CENTER_VERTICAL);
+        statsText = label("0 video", 13, MUTED, false);
+        scanRow.addView(statsText, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView scan = label("Pindai unduhan", 12, ACCENT, true);
+        scan.setPadding(dp(8), dp(12), dp(3), dp(12));
+        scanRow.addView(scan);
+        scan.setOnClickListener(v -> scanDownloads());
         LinearLayout.LayoutParams statsLp = new LinearLayout.LayoutParams(-1, -2);
-        statsLp.topMargin = dp(20);
-        statsLp.bottomMargin = dp(14);
-        page.addView(statsText, statsLp);
+        statsLp.topMargin = dp(15);
+        statsLp.bottomMargin = dp(10);
+        page.addView(scanRow, statsLp);
 
         LinearLayout tabs = row();
         filterTabs = new TextView[3];
@@ -330,6 +381,14 @@ public final class MainActivity extends Activity implements TelegramRepository.L
         statsText.setText(videos.size() + " video   ·   " + downloaded + " diunduh   ·   " +
                 (videos.size() - downloaded) + " belum" + (repo.syncing() ? "   ·   Menyinkronkan…" : ""));
         adapter.update(videos, filter, searchText);
+        updateAutoWifi();
+    }
+
+    private void updateAutoWifi() {
+        if (autoWifiText == null || repo == null) return;
+        autoWifiText.setText(!repo.autoWifiEnabled() ? "MATI · Ketuk" :
+                repo.wifiAvailable() ? "Wi-Fi saja · AKTIF" : "Wi-Fi saja · MENUNGGU");
+        autoWifiText.setTextColor(repo.autoWifiEnabled() ? ACCENT : MUTED);
     }
 
     private void updateTabs() {
@@ -356,21 +415,35 @@ public final class MainActivity extends Activity implements TelegramRepository.L
     }
 
     private void onVideoPressed(VideoEntry entry) {
-        if (entry.complete()) {
-            new AlertDialog.Builder(this).setTitle(entry.title)
-                .setItems(new String[]{"Putar video", "Simpan ke Downloads HP"}, (dialog, which) -> {
-                    if (which == 0) {
-                        Intent player = new Intent(this, PlayerActivity.class);
-                        player.putExtra("local_path", entry.localPath());
-                        startActivity(player);
-                    } else saveToPhone(entry);
-                }).show();
-        } else if (entry.downloading()) {
-            Toast.makeText(this, "Sedang mengunduh: " + entry.progress() + "%", Toast.LENGTH_SHORT).show();
-        } else {
-            repo.download(entry);
-            Toast.makeText(this, "Mengunduh video…", Toast.LENGTH_SHORT).show();
+        if (adapter == null) return;
+        repo.setPlayback(adapter.displayed());
+        Intent intent = new Intent(this, PlayerActivity.class);
+        intent.putExtra("message_id", entry.messageId);
+        startActivity(intent);
+    }
+
+    private void scanDownloads() {
+        String permission = Build.VERSION.SDK_INT >= 33 ? Manifest.permission.READ_MEDIA_VIDEO
+                          : Manifest.permission.READ_EXTERNAL_STORAGE;
+        if (Build.VERSION.SDK_INT >= 23 && checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED) {
+            new AlertDialog.Builder(this)
+                .setTitle("Deteksi video yang sudah diunduh")
+                .setMessage("Izinkan akses video HP supaya VaultGram bisa menemukan salinan di Downloads atau folder Telegram. Cache privat Telegram tidak dapat dibaca.")
+                .setNegativeButton("Batal", null)
+                .setPositiveButton("Izinkan", (d, w) -> requestPermissions(new String[]{permission}, SCAN_PERMISSION))
+                .show();
+            return;
         }
+        repo.scanDownloads();
+        Toast.makeText(this, "Memindai video yang tersimpan di HP…", Toast.LENGTH_SHORT).show();
+    }
+
+    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(requestCode, permissions, results);
+        if (requestCode != SCAN_PERMISSION) return;
+        repo.scanDownloads();
+        if (results.length == 0 || results[0] != PackageManager.PERMISSION_GRANTED)
+            Toast.makeText(this, "Izin belum diberikan; hanya file yang bisa diakses yang akan ditemukan.", Toast.LENGTH_LONG).show();
     }
 
     private void saveToPhone(VideoEntry entry) {
@@ -405,7 +478,11 @@ public final class MainActivity extends Activity implements TelegramRepository.L
                 ContentValues complete = new ContentValues();
                 complete.put(MediaStore.MediaColumns.IS_PENDING, 0);
                 getContentResolver().update(uri, complete, null, null);
-                runOnUiThread(() -> Toast.makeText(this, "Tersimpan di Downloads/VaultGram", Toast.LENGTH_LONG).show());
+                Uri savedUri = uri;
+                runOnUiThread(() -> {
+                    repo.rememberExport(entry, savedUri);
+                    Toast.makeText(this, "Tersimpan di Downloads/VaultGram", Toast.LENGTH_LONG).show();
+                });
             } catch (Exception e) {
                 if (uri != null) getContentResolver().delete(uri, null, null);
                 String msg = e.getMessage();
@@ -416,6 +493,10 @@ public final class MainActivity extends Activity implements TelegramRepository.L
 
     private final class GalleryAdapter extends BaseAdapter {
         private final ArrayList<VideoEntry> shown = new ArrayList<>();
+        private final ExecutorService thumbs = Executors.newSingleThreadExecutor();
+        private final Set<Integer> frameRequests = new HashSet<>();
+        List<VideoEntry> displayed() { return new ArrayList<>(shown); }
+        void close() { thumbs.shutdownNow(); }
         private final LruCache<Integer, Bitmap> cache = new LruCache<Integer, Bitmap>(24 * 1024) {
             @Override protected int sizeOf(Integer key, Bitmap bm) { return Math.max(1, bm.getByteCount() / 1024); }
         };
@@ -431,6 +512,31 @@ public final class MainActivity extends Activity implements TelegramRepository.L
             }
             notifyDataSetChanged();
         }
+        private void requestLocalFrame(VideoEntry e, int cacheKey) {
+            if (!frameRequests.add(cacheKey)) return;
+            String path = e.localPath();
+            Uri uri = e.playableUri();
+            thumbs.execute(() -> {
+                Bitmap bitmap = null;
+                MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+                try {
+                    if (!path.isEmpty()) retriever.setDataSource(path);
+                    else if (uri != null) retriever.setDataSource(MainActivity.this, uri);
+                    Bitmap full = retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+                    if (full != null) {
+                        bitmap = Bitmap.createScaledBitmap(full, dp(240), dp(145), true);
+                        if (bitmap != full) full.recycle();
+                    }
+                } catch (Exception ignored) { }
+                finally { retriever.release(); }
+                Bitmap finalBitmap = bitmap;
+                runOnUiThread(() -> {
+                    if (adapter != this || !galleryVisible) return;
+                    if (finalBitmap != null) { cache.put(cacheKey, finalBitmap); notifyDataSetChanged(); }
+                });
+            });
+        }
+
         @Override public int getCount() { return shown.size(); }
         @Override public VideoEntry getItem(int n) { return shown.get(n); }
         @Override public long getItemId(int n) { return getItem(n).messageId; }
@@ -487,19 +593,44 @@ public final class MainActivity extends Activity implements TelegramRepository.L
                 holder.status.setText("↓ Belum diunduh");
                 holder.status.setTextColor(MUTED);
             }
-            Bitmap bitmap = cache.get(e.thumb != null ? e.thumb.id : e.fileId);
+            int highKey = e.thumb != null ? e.thumb.id : e.fileId;
+            Bitmap bitmap = cache.get(highKey);
             if (bitmap == null && e.thumb != null && e.thumb.local != null &&
-                    e.thumb.local.isDownloadingCompleted && e.thumb.local.path != null) {
+                    e.thumb.local.isDownloadingCompleted && e.thumb.local.path != null &&
+                    new File(e.thumb.local.path).isFile()) {
                 BitmapFactory.Options options = new BitmapFactory.Options();
                 options.inSampleSize = 2;
                 bitmap = BitmapFactory.decodeFile(e.thumb.local.path, options);
+                if (bitmap != null) cache.put(highKey, bitmap);
             }
-            if (bitmap == null && e.preview != null && e.preview.length > 0)
-                bitmap = BitmapFactory.decodeByteArray(e.preview, 0, e.preview.length);
-            if (bitmap != null) cache.put(e.thumb != null ? e.thumb.id : e.fileId, bitmap);
+            if (bitmap == null && e.preview != null && e.preview.length > 0) {
+                int previewKey = -Math.abs(highKey);
+                bitmap = cache.get(previewKey);
+                if (bitmap == null) {
+                    bitmap = BitmapFactory.decodeByteArray(e.preview, 0, e.preview.length);
+                    if (bitmap != null) cache.put(previewKey, bitmap);
+                }
+            }
             holder.image.setImageBitmap(bitmap);
-            if (bitmap == null) repo.requestThumbnail(e);
+            // Even when a low-res minithumbnail exists, download its full-resolution replacement.
+            repo.requestThumbnail(e);
+            if (cache.get(highKey) == null && e.complete() &&
+                    (e.thumb == null || e.thumb.local == null || !e.thumb.local.isDownloadingCompleted))
+                requestLocalFrame(e, highKey);
             convertView.setOnClickListener(v -> onVideoPressed(e));
+            convertView.setOnLongClickListener(v -> {
+                new AlertDialog.Builder(MainActivity.this).setTitle(e.title)
+                    .setItems(new String[]{"Simpan ke Downloads HP", "Putar"}, (d, choice) -> {
+                        if (choice == 0) {
+                            if (!e.localPath().isEmpty()) saveToPhone(e);
+                            else if (e.complete()) Toast.makeText(MainActivity.this,
+                                "Video sudah ada di penyimpanan HP", Toast.LENGTH_SHORT).show();
+                            else { repo.download(e); Toast.makeText(MainActivity.this,
+                                "Mengunduh video…", Toast.LENGTH_SHORT).show(); }
+                        } else onVideoPressed(e);
+                    }).show();
+                return true;
+            });
             return convertView;
         }
     }

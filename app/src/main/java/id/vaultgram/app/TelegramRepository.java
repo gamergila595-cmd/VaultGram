@@ -1,6 +1,10 @@
 package id.vaultgram.app;
 
 import android.content.Context;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
@@ -12,11 +16,14 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.Iterator;
 
 /** One TDLib session, one account, one selected bot's message history. */
 final class TelegramRepository {
@@ -50,6 +57,8 @@ final class TelegramRepository {
     private String oneShotPhone = "";
     private long chatId;
     private int generation;
+    private int localScanGeneration;
+    private final ArrayList<VideoEntry> playback = new ArrayList<>();
     private boolean isSyncing;
     private boolean profileLoaded;
     private boolean didRequestPhone;
@@ -58,10 +67,35 @@ final class TelegramRepository {
     private final Map<Integer, List<VideoEntry>> fileById = new HashMap<>();
     private final Map<Integer, List<VideoEntry>> thumbById = new HashMap<>();
     private final Set<Integer> thumbnailsRequested = new HashSet<>();
+    // Only messages newer than the initial bot history are auto-downloaded.
+    // Pending IDs persist across process restarts and network changes.
+    private final LinkedHashSet<Long> pendingAutoIds = new LinkedHashSet<>();
+    private final LinkedHashMap<Long, VideoEntry> autoQueue = new LinkedHashMap<>();
+    private final Set<Integer> autoActiveFiles = new HashSet<>();
+    private final Set<Integer> manuallyRequested = new HashSet<>();
+    private final ConnectivityManager network;
+    private long seenId;
+    private long syncHighWater;
+    private long historyHighWater;
+    private boolean checkpointSet;
+    private boolean wifi = false;
+    private final ConnectivityManager.NetworkCallback wifiCallback = new ConnectivityManager.NetworkCallback() {
+        @Override public void onAvailable(Network n) { main.post(() -> onNetworkChanged()); }
+        @Override public void onLost(Network n) { main.post(() -> onNetworkChanged()); }
+        @Override public void onCapabilitiesChanged(Network n, NetworkCapabilities c) {
+            main.post(() -> onNetworkChanged());
+        }
+    };
 
     private TelegramRepository(Context context) {
         this.context = context;
         prefs = new SecurePrefs(context);
+        network = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+        wifi = activeWifi();
+        if (network != null) {
+            try { network.registerDefaultNetworkCallback(wifiCallback); }
+            catch (RuntimeException ignored) { /* If unavailable, keep auto-download disabled. */ }
+        }
     }
 
     void bind(Listener listener) {
@@ -73,6 +107,8 @@ final class TelegramRepository {
         listener.onVideosChanged();
         if (!status.isEmpty()) listener.onStatus(status);
     }
+
+    void unbind(Listener old) { if (listener == old) listener = null; }
 
     boolean hasApiCredentials() {
         return !prefs.get("api_id").isEmpty() && !prefs.get("api_hash").isEmpty();
@@ -110,8 +146,15 @@ final class TelegramRepository {
         } else if (update instanceof TdApi.UpdateNewMessage) {
             TdApi.Message message = ((TdApi.UpdateNewMessage) update).message;
             main.post(() -> {
-                if (chatId != 0 && message.chatId == chatId && addMessage(message, true))
-                    notifyVideos();
+                if (chatId == 0 || message.chatId != chatId) return;
+                boolean added = addMessage(message, true);
+                // When history sync is running, capture all new messages at its end.
+                if (!isSyncing && checkpointSet && message.id > seenId) {
+                    seenId = message.id;
+                    prefs.put(checkpointKey(), Long.toString(seenId));
+                    if (added) queueAuto(findMessage(message.id));
+                }
+                if (added) notifyVideos();
             });
         }
     }
@@ -134,7 +177,7 @@ final class TelegramRepository {
                 p.systemLanguageCode = "id";
                 p.deviceModel = Build.MODEL;
                 p.systemVersion = Build.VERSION.RELEASE;
-                p.applicationVersion = "1.0.0";
+                p.applicationVersion = "1.1.0";
                 client.send(p, this::checkError);
             } catch (Exception e) { postError("Konfigurasi Telegram gagal: " + e.getMessage()); }
         } else if (state instanceof TdApi.AuthorizationStateWaitPhoneNumber) {
@@ -233,8 +276,19 @@ final class TelegramRepository {
                 if (!(user.type instanceof TdApi.UserTypeBot)) {
                     postError("@" + username + " bukan akun bot Telegram."); return;
                 }
+                if (chatId != chat.id) {
+                    cancelAutoTransfers();
+                    pendingAutoIds.clear();
+                    autoQueue.clear();
+                    autoActiveFiles.clear();
+                    manuallyRequested.clear();
+                }
                 chatId = chat.id;
                 botName = username;
+                String stored = prefs.get(checkpointKey());
+                checkpointSet = !stored.isEmpty();
+                seenId = parseLong(stored);
+                loadPending();
                 prefs.put("bot", username);
                 prefs.put("pending_bot", "");
                 if (listener != null) listener.onBot(username);
@@ -254,7 +308,11 @@ final class TelegramRepository {
     void sync() {
         if (chatId == 0 || client == null) return;
         final int token = ++generation;
+        syncHighWater = seenId;
+        historyHighWater = seenId;
         items.clear();
+        playback.clear();
+        localScanGeneration++;
         messagesSeen.clear();
         fileById.clear();
         thumbById.clear();
@@ -280,6 +338,7 @@ final class TelegramRepository {
             int added = 0;
             for (TdApi.Message message : list) {
                 if (message == null) continue;
+                if (message.id > historyHighWater) historyHighWater = message.id;
                 if (last == 0 || message.id < last) last = message.id;
                 if (addMessage(message, false)) added++;
             }
@@ -299,8 +358,20 @@ final class TelegramRepository {
     private void endSync(int token, String message) {
         if (token != generation) return;
         isSyncing = false;
+        // On the first sync, record a baseline, never auto-download the whole archive.
+        if (checkpointSet) {
+            for (VideoEntry entry : items) {
+                if (entry.messageId > syncHighWater || pendingAutoIds.contains(entry.messageId))
+                    queueAuto(entry);
+            }
+        }
+        seenId = Math.max(seenId, historyHighWater);
+        checkpointSet = true;
+        prefs.put(checkpointKey(), Long.toString(seenId));
         notifyVideos();
         setStatus(message + " " + items.size() + " video.");
+        scanDownloads();
+        pumpAuto();
     }
 
     private boolean addMessage(TdApi.Message message, boolean atFront) {
@@ -349,17 +420,30 @@ final class TelegramRepository {
     }
 
     void requestThumbnail(VideoEntry video) {
-        if (client == null || video.thumb == null || video.thumb.local == null ||
-                video.thumb.local.isDownloadingCompleted) return;
+        if (client == null || video.thumb == null) return;
+        if (video.thumb.local != null && video.thumb.local.isDownloadingCompleted &&
+                video.thumb.local.path != null && new File(video.thumb.local.path).isFile()) return;
         int id = video.thumb.id;
         if (thumbnailsRequested.add(id))
-            client.send(new TdApi.DownloadFile(id, 2, 0, 0, false), this::checkError);
+            client.send(new TdApi.DownloadFile(id, 4, 0, 0, false), result -> {
+                if (result instanceof TdApi.File) main.post(() -> onFileUpdate((TdApi.File) result));
+                else checkError(result);
+            });
     }
 
     void download(VideoEntry video) {
         if (client == null || chatId == 0 || video == null || video.complete()) return;
-        // Persistent TDLib downloads survive app restarts and emit UpdateFile progress.
+        // A tap is an explicit manual download: cellular use is permitted by user choice.
+        manuallyRequested.add(video.fileId);
+        autoActiveFiles.remove(video.fileId);
+        autoQueue.remove(video.messageId);
+        pendingAutoIds.remove(video.messageId);
+        savePending();
         client.send(new TdApi.AddFileToDownloads(video.fileId, chatId, video.messageId, 16), this::checkError);
+        client.send(new TdApi.DownloadFile(video.fileId, 32, 0, 0, false), result -> {
+            if (result instanceof TdApi.File) main.post(() -> onFileUpdate((TdApi.File) result));
+            else checkError(result);
+        });
     }
 
     private void onFileUpdate(TdApi.File updated) {
@@ -375,9 +459,137 @@ final class TelegramRepository {
             for (VideoEntry e : thumbs) e.thumb = updated;
             changed = true;
         }
+        if (autoActiveFiles.contains(updated.id) && updated.local != null &&
+                (updated.local.isDownloadingCompleted || !updated.local.isDownloadingActive)) {
+            autoActiveFiles.remove(updated.id);
+            if (updated.local.isDownloadingCompleted) {
+                for (Iterator<Map.Entry<Long, VideoEntry>> it = autoQueue.entrySet().iterator(); it.hasNext();) {
+                    Map.Entry<Long, VideoEntry> entry = it.next();
+                    if (entry.getValue().fileId == updated.id) {
+                        pendingAutoIds.remove(entry.getKey());
+                        it.remove();
+                    }
+                }
+                savePending();
+            }
+            // Do not instantly retry a failed transfer; a future Wi-Fi transition or sync will retry.
+            if (updated.local.isDownloadingCompleted) pumpAuto();
+        }
         if (changed) notifyVideos();
     }
 
+    private static long parseLong(String s) {
+        try { return Long.parseLong(s); } catch (Exception e) { return 0; }
+    }
+    private String checkpointKey() { return "newest_" + chatId; }
+    private String pendingKey() { return "auto_pending_" + chatId; }
+    private void savePending() {
+        if (chatId == 0) return;
+        StringBuilder b = new StringBuilder();
+        for (Long id : pendingAutoIds) {
+            if (b.length() > 0) b.append(',');
+            b.append(id);
+        }
+        prefs.put(pendingKey(), b.toString());
+    }
+    private void loadPending() {
+        pendingAutoIds.clear();
+        for (String value : prefs.get(pendingKey()).split(",")) {
+            long id = parseLong(value);
+            if (id > 0) pendingAutoIds.add(id);
+        }
+    }
+    private VideoEntry findMessage(long messageId) {
+        for (VideoEntry v : items) if (v.messageId == messageId) return v;
+        return null;
+    }
+    boolean autoWifiEnabled() { return !"off".equals(prefs.get("auto_wifi")); }
+    boolean wifiAvailable() { return wifi; }
+    void setAutoWifiEnabled(boolean enable) {
+        prefs.put("auto_wifi", enable ? "on" : "off");
+        if (!enable) cancelAutoTransfers();
+        else pumpAuto();
+    }
+    private boolean activeWifi() {
+        if (network == null) return false;
+        try {
+            NetworkCapabilities c = network.getNetworkCapabilities(network.getActiveNetwork());
+            return c != null && c.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
+                c.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
+        } catch (Exception e) { return false; }
+    }
+    private void onNetworkChanged() {
+        boolean now = activeWifi();
+        if (wifi == now) return;
+        wifi = now;
+        if (!wifi) cancelAutoTransfers();
+        else pumpAuto();
+        notifyVideos();
+    }
+    private void cancelAutoTransfers() {
+        if (client != null) for (Integer fileId : new HashSet<>(autoActiveFiles)) {
+            if (!manuallyRequested.contains(fileId))
+                client.send(new TdApi.CancelDownloadFile(fileId, false), this::checkError);
+        }
+        autoActiveFiles.clear();
+    }
+    private void queueAuto(VideoEntry v) {
+        if (v == null || v.complete() || manuallyRequested.contains(v.fileId)) return;
+        pendingAutoIds.add(v.messageId);
+        autoQueue.put(v.messageId, v);
+        savePending();
+        pumpAuto();
+    }
+    private void pumpAuto() {
+        if (!autoWifiEnabled() || !wifi || client == null || chatId == 0) return;
+        for (Map.Entry<Long, VideoEntry> item : new ArrayList<>(autoQueue.entrySet())) {
+            if (autoActiveFiles.size() >= 2) break;
+            VideoEntry video = item.getValue();
+            if (video.complete()) {
+                autoQueue.remove(item.getKey());
+                pendingAutoIds.remove(item.getKey());
+                savePending();
+                continue;
+            }
+            if (manuallyRequested.contains(video.fileId) || autoActiveFiles.contains(video.fileId)) continue;
+            autoActiveFiles.add(video.fileId);
+            client.send(new TdApi.DownloadFile(video.fileId, 12, 0, 0, false), result -> {
+                if (result instanceof TdApi.File) main.post(() -> onFileUpdate((TdApi.File) result));
+                else if (result instanceof TdApi.Error) main.post(() -> {
+                    autoActiveFiles.remove(video.fileId);
+                    checkError(result);
+                });
+            });
+        }
+    }
+
+    void setPlayback(List<VideoEntry> shown) {
+        playback.clear();
+        playback.addAll(shown);
+    }
+    List<VideoEntry> playback() {
+        return playback.isEmpty() ? snapshot() : new ArrayList<>(playback);
+    }
+    void rememberExport(VideoEntry video, android.net.Uri uri) {
+        LocalVideos.remember(context, chatId, video, uri);
+        video.exportedUri = uri.toString();
+        notifyVideos();
+    }
+    void scanDownloads() {
+        if (chatId == 0 || items.isEmpty()) return;
+        int token = ++localScanGeneration;
+        long selectedChat = chatId;
+        List<VideoEntry> current = snapshot();
+        new Thread(() -> {
+            Map<Long, String> known = LocalVideos.find(context, selectedChat, current);
+            main.post(() -> {
+                if (token != localScanGeneration || chatId != selectedChat) return;
+                for (VideoEntry video : current) video.exportedUri = known.get(video.messageId);
+                notifyVideos();
+                setStatus("Pemeriksaan unduhan selesai · " + current.size() + " video");
+            });
+        }, "VaultGram-ScanDownloads").start();
+    }
     List<VideoEntry> snapshot() { return new ArrayList<>(items); }
     boolean syncing() { return isSyncing; }
     boolean hasBot() { return chatId != 0; }
