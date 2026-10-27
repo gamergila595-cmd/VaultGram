@@ -33,6 +33,16 @@ import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.widget.HorizontalScrollView;
+import android.widget.VideoView;
+import android.os.StatFs;
+import android.os.Environment;
+import android.os.Handler;
+import android.content.DialogInterface;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.Random;
+import android.content.ActivityNotFoundException;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -54,6 +64,11 @@ public final class MainActivity extends Activity implements TelegramRepository.L
     private static final int MUTED = Color.rgb(148, 163, 184);
     private static final int ACCENT = Color.rgb(107, 224, 202);
     private static final int SCAN_PERMISSION = 614;
+    private static final int BACKUP_CREATE = 2111;
+    private static final int BACKUP_OPEN = 2112;
+    private boolean backupWithVideos;
+    private String backupPassword;
+    private int sortBy;
     private final int[] filters = {0, 1, 2};
     private FrameLayout root;
     private TelegramRepository repo;
@@ -75,6 +90,7 @@ public final class MainActivity extends Activity implements TelegramRepository.L
         repo = TelegramRepository.get(getApplicationContext());
         try {
             repo.bind(this);
+            if (repo.hasCachedGallery()) renderGallery();
             if (repo.hasApiCredentials()) repo.connect();
             else if (currentStage == null) renderAuth(TelegramRepository.Stage.SETUP, "");
         } catch (Exception e) {
@@ -100,8 +116,11 @@ public final class MainActivity extends Activity implements TelegramRepository.L
     @Override public void onStage(TelegramRepository.Stage stage, String message) {
         if (stage == currentStage && (galleryVisible == (stage == TelegramRepository.Stage.READY))) return;
         currentStage = stage;
-        if (stage == TelegramRepository.Stage.READY) renderGallery();
-        else renderAuth(stage, message);
+        if (stage == TelegramRepository.Stage.READY ||
+            (repo != null && repo.hasCachedGallery() && (stage == TelegramRepository.Stage.CONNECTING || stage == TelegramRepository.Stage.SETUP))) {
+            if (!galleryVisible) renderGallery();
+            else if (statusText != null) statusText.setText(stage == TelegramRepository.Stage.READY ? "Tersambung" : "Galeri offline · menghubungkan…");
+        } else renderAuth(stage, message);
     }
     @Override public void onAccount(String account) {
         if (accountText != null) accountText.setText(account);
@@ -249,20 +268,26 @@ public final class MainActivity extends Activity implements TelegramRepository.L
         header.addView(brand, brandLp);
         brand.addView(label("VaultGram", 24, TEXT, true));
         brand.addView(label("GALERI VIDEO BOT", 10, ACCENT, true));
-        TextView lock = label("Kunci", 12, ACCENT, true);
-        lock.setGravity(Gravity.CENTER);
-        lock.setBackground(round(PANEL, 14));
-        LinearLayout.LayoutParams lockLp = new LinearLayout.LayoutParams(dp(56), dp(44));
+        TextView settings = label("⚙", 25, ACCENT, true);
+        settings.setGravity(Gravity.CENTER);
+        settings.setBackground(round(PANEL, 14));
+        LinearLayout.LayoutParams lockLp = new LinearLayout.LayoutParams(dp(44), dp(44));
         lockLp.rightMargin = dp(8);
-        header.addView(lock, lockLp);
-        lock.setOnClickListener(v -> AppLock.change(this));
+        header.addView(settings, lockLp);
+        settings.setOnClickListener(v -> openSettings());
         TextView refresh = label("↻", 30, TEXT, true);
         refresh.setGravity(Gravity.CENTER);
         refresh.setBackground(round(PANEL, 14));
         LinearLayout.LayoutParams refreshLp = new LinearLayout.LayoutParams(dp(44), dp(44));
         header.addView(refresh, refreshLp);
         refresh.setOnClickListener(v -> {
-            if (repo.hasBot()) repo.sync(); else promptBot();
+            if (repo.hasBot()) repo.syncRecent(); else promptBot();
+        });
+        refresh.setOnLongClickListener(v -> {
+            new AlertDialog.Builder(this).setTitle("Sinkronisasi penuh?")
+                .setMessage("Baca ulang seluruh riwayat. Galeri lama tetap ditampilkan dan status unduhan tidak dihapus.")
+                .setNegativeButton("Batal",null).setPositiveButton("Mulai",(d,w)->repo.fullSync()).show();
+            return true;
         });
         page.addView(header);
 
@@ -335,6 +360,19 @@ public final class MainActivity extends Activity implements TelegramRepository.L
         }
         page.addView(tabs);
         updateTabs();
+        HorizontalScrollView shortcuts = new HorizontalScrollView(this);
+        shortcuts.setHorizontalScrollBarEnabled(false);
+        LinearLayout actions = row();
+        actions.setPadding(0,dp(12),0,dp(2));
+        addChip(actions,"▶ Feed",()->openFeed(false));
+        addChip(actions,"⇄ Acak",()->openFeed(true));
+        addChip(actions,"★ Favorit",()->setExtraFilter(3));
+        addChip(actions,"◷ Belum dilihat",()->setExtraFilter(4));
+        addChip(actions,"◫ Sampah",()->setExtraFilter(5));
+        addChip(actions,"↓ Massal",this::downloadBatch);
+        addChip(actions,"↓ Antrean",this::downloadManager);
+        shortcuts.addView(actions);
+        page.addView(shortcuts);
 
         EditText search = input("Cari nama video…", InputType.TYPE_CLASS_TEXT, searchText);
         search.setSingleLine(true);
@@ -378,8 +416,11 @@ public final class MainActivity extends Activity implements TelegramRepository.L
         List<VideoEntry> videos = repo.snapshot();
         int downloaded = 0;
         for (VideoEntry v : videos) if (v.complete()) downloaded++;
-        statsText.setText(videos.size() + " video   ·   " + downloaded + " diunduh   ·   " +
-                (videos.size() - downloaded) + " belum" + (repo.syncing() ? "   ·   Menyinkronkan…" : ""));
+        int trash=0,favorites=0;
+        for(VideoEntry v:videos){if(v.trashedAt>0)trash++;if(v.favorite)favorites++;}
+        statsText.setText((videos.size()-trash) + " video · " + downloaded + " diunduh · " + favorites + " favorit"+
+                (repo.newVideos()>0 ? " · "+repo.newVideos()+" baru" : "")+
+                (repo.syncing() ? " · Cek terbaru…" : ""));
         adapter.update(videos, filter, searchText);
         updateAutoWifi();
     }
@@ -491,6 +532,196 @@ public final class MainActivity extends Activity implements TelegramRepository.L
         }, "VaultGram-SaveToPhone").start();
     }
 
+    private void addChip(LinearLayout parent,String title,Runnable action){
+        TextView chip=label(title,12,TEXT,true);
+        chip.setPadding(dp(13),dp(10),dp(13),dp(10));chip.setBackground(round(PANEL2,14));
+        LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-2,-2);lp.rightMargin=dp(8);
+        parent.addView(chip,lp);chip.setOnClickListener(v->action.run());
+    }
+    private void setExtraFilter(int f){
+        filter=f;updateTabs();refreshGrid();
+        Toast.makeText(this,f==3?"Filter favorit":f==4?"Filter belum dilihat":"Sampah (7 hari)",Toast.LENGTH_SHORT).show();
+    }
+    private void openFeed(boolean random){
+        if(adapter==null || adapter.getCount()==0){showFailure("Belum ada video untuk diputar");return;}
+        List<VideoEntry> play=adapter.displayed();
+        if(random)Collections.shuffle(play);
+        repo.setPlayback(play);
+        Intent intent=new Intent(this,PlayerActivity.class);
+        intent.putExtra("message_id",play.get(0).messageId);
+        intent.putExtra("feed_mode",true);
+        startActivity(intent);
+    }
+    private void showPreview(VideoEntry e){
+        Uri uri=e.playableUri();
+        if(uri==null){
+            new AlertDialog.Builder(this).setTitle(e.title).setMessage("Preview video memerlukan file yang sudah tersimpan. Thumbnail tetap bisa dilihat di galeri.")
+                .setPositiveButton("Unduh",(d,w)->repo.download(e)).setNegativeButton("Batal",null).show();
+            return;
+        }
+        VideoView v=new VideoView(this);
+        LinearLayout box=column();box.setPadding(dp(8),dp(4),dp(8),dp(4));
+        box.addView(v,new LinearLayout.LayoutParams(-1,dp(260)));
+        AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Preview · "+e.title)
+            .setView(box).setPositiveButton("Putar penuh",(d,w)->onVideoPressed(e))
+            .setNegativeButton("Tutup",null).create();
+        dialog.setOnDismissListener(d->v.stopPlayback());
+        dialog.show();v.setVideoURI(uri);
+        v.setOnPreparedListener(mp->{mp.setLooping(false);v.start();});
+        v.setOnErrorListener((mp,a,b)->{showFailure("Preview tidak didukung untuk format ini");return true;});
+        new Handler().postDelayed(()->{if(dialog.isShowing() && v.isPlaying())v.pause();},8500);
+    }
+    private void showVideoMenu(VideoEntry e){
+        String[] choices={"Preview 8 detik","Detail video",e.favorite?"Hapus favorit":"Tambahkan favorit",
+            e.watched?"Tandai belum dilihat":"Tandai sudah dilihat",
+            e.trashedAt>0?"Pulihkan dari sampah":"Pindahkan ke sampah",
+            "Unduh / Lanjutkan","Jeda download","Simpan ke Downloads HP"};
+        new AlertDialog.Builder(this).setTitle(e.title).setItems(choices,(d,which)->{
+            switch(which){
+                case 0:showPreview(e);break;
+                case 1:showDetails(e);break;
+                case 2:repo.setFavorite(e,!e.favorite);break;
+                case 3:repo.setWatched(e,!e.watched);break;
+                case 4:if(e.trashedAt>0)repo.restore(e);else repo.trash(e);break;
+                case 5:repo.download(e);break;
+                case 6:repo.pauseDownload(e);break;
+                case 7:if(!e.localPath().isEmpty())saveToPhone(e);
+                    else showFailure("Video belum tersimpan di cache aplikasi.");break;
+            }
+        }).show();
+    }
+    private void showDetails(VideoEntry e){
+        int duplicates=0;
+        for(VideoEntry entry:repo.snapshot())if(entry.fileId==e.fileId)duplicates++;
+        String s=e.summary()+"\nDurasi: "+e.durationLabel()+
+            "\nUkuran: "+String.format(Locale.US,"%.2f MB",e.size()/1048576.0)+
+            "\nID pesan: "+e.messageId+"\nID berkas: "+e.fileId+
+            "\nStatus: "+(e.complete()?"Tersimpan di perangkat":"Belum diunduh")+
+            "\nDuplikat ID file dalam bot: "+duplicates+
+            "\nTerakhir ditonton: "+(e.watched?"Sudah":"Belum")+
+            "\nPosisi nonton: "+(e.positionMs/1000)+" detik";
+        new AlertDialog.Builder(this).setTitle(e.title).setMessage(s).setPositiveButton("Tutup",null).show();
+    }
+    private void downloadBatch(){
+        if(adapter==null)return;
+        List<VideoEntry> filtered=adapter.displayed();
+        if(filtered.isEmpty()){showFailure("Tidak ada video untuk diunduh");return;}
+        String[] limits={"10 video pertama","50 video pertama","100 video pertama","Semua yang belum diunduh"};
+        new AlertDialog.Builder(this).setTitle("Download massal")
+            .setItems(limits,(d,choice)->{
+                int max=choice==0?10:choice==1?50:choice==2?100:Integer.MAX_VALUE;
+                int n=0;
+                for(VideoEntry e:filtered){
+                    if(n>=max)break;
+                    if(!e.complete() && e.trashedAt==0){repo.download(e);n++;}
+                }
+                Toast.makeText(this,n+" video masuk antrean manual",Toast.LENGTH_LONG).show();
+            }).setNegativeButton("Batal",null).show();
+    }
+    private void downloadManager(){
+        new AlertDialog.Builder(this).setTitle("Download Manager")
+            .setMessage(repo.monitor()+"\n\nDownload otomatis hanya melalui Wi-Fi. Download manual bisa memakai data seluler.")
+            .setPositiveButton("Download massal",(d,w)->downloadBatch())
+            .setNeutralButton(repo.autoWifiEnabled()?"Jeda otomatis":"Lanjut otomatis",(d,w)->{
+                repo.setAutoWifiEnabled(!repo.autoWifiEnabled());updateAutoWifi();
+            }).setNegativeButton("Tutup",null).show();
+    }
+    private void showStorage(){
+        long downloaded=repo.estimatedBytes();
+        StatFs fs=new StatFs(getFilesDir().getAbsolutePath());
+        long free=fs.getAvailableBytes();
+        String info=String.format(Locale.US,"Cache video terdeteksi: %.2f GB\nRuang kosong: %.2f GB\nBatas auto-download: %s",
+            downloaded/(1024.0*1024*1024),free/(1024.0*1024*1024),
+            repo.prefs.get("storage_limit_gb").isEmpty()?"Tanpa batas":repo.prefs.get("storage_limit_gb")+" GB");
+        new AlertDialog.Builder(this).setTitle("Penyimpanan VaultGram").setMessage(info)
+            .setPositiveButton("Atur batas",(d,w)->setStorageLimit()).setNegativeButton("Tutup",null).show();
+    }
+    private void setStorageLimit(){
+        String[] options={"Tanpa batas","5 GB","10 GB","20 GB","50 GB"};String[] vals={"","5","10","20","50"};
+        new AlertDialog.Builder(this).setTitle("Batas auto-download")
+            .setItems(options,(d,w)->repo.prefs.put("storage_limit_gb",vals[w])).show();
+    }
+    private void lockTimeout(){
+        String[] titles={"Langsung","30 detik","1 menit (disarankan)","5 menit"};
+        String[] values={"0","30000","60000","300000"};
+        new AlertDialog.Builder(this).setTitle("Kunci setelah aplikasi ditinggalkan")
+            .setItems(titles,(d,w)->repo.prefs.put("lock_timeout_ms",values[w])).show();
+    }
+    private void sortDialog(){
+        String[] options={"Terbaru","Terlama","Terbesar","Terkecil","Acak"};
+        new AlertDialog.Builder(this).setTitle("Urutkan galeri")
+            .setItems(options,(d,w)->{sortBy=w;refreshGrid();}).show();
+    }
+    private void openSettings(){
+        String[] choices={"Kunci VaultGram sekarang","Ganti password","Fingerprint: "+(AppLock.biometricEnabled(this)?"Aktif":"Mati"),
+            "Waktu kunci otomatis","Blokir screenshot: "+(!"off".equals(repo.prefs.get("block_screenshots"))?"Aktif":"Mati"),
+            "Sinkronisasi terbaru","Sinkronisasi penuh","Pengurutan galeri","Download Manager",
+            "Download hanya malam (23–06): "+(repo.nightOnly()?"Aktif":"Mati"),
+            "Hanya saat dicas: "+(repo.chargingOnly()?"Aktif":"Mati"),
+            "Penyimpanan & batas cache","Backup ringan (terenkripsi)","Backup lengkap + video","Pulihkan backup",
+            "Status jaringan & sinkronisasi"};
+        new AlertDialog.Builder(this).setTitle("Pengaturan VaultGram")
+            .setItems(choices,(d,w)->{
+                switch(w){
+                    case 0:AppLock.lock(this);break;
+                    case 1:AppLock.change(this);break;
+                    case 2:repo.prefs.put("fingerprint",AppLock.biometricEnabled(this)?"off":"on");break;
+                    case 3:lockTimeout();break;
+                    case 4:repo.prefs.put("block_screenshots","off".equals(repo.prefs.get("block_screenshots"))?"on":"off");AppLock.privacy(this);break;
+                    case 5:repo.syncRecent();break;
+                    case 6:repo.fullSync();break;
+                    case 7:sortDialog();break;
+                    case 8:downloadManager();break;
+                    case 9:repo.setNightOnly(!repo.nightOnly());break;
+                    case 10:repo.setChargingOnly(!repo.chargingOnly());break;
+                    case 11:showStorage();break;
+                    case 12:chooseBackup(false);break;
+                    case 13:chooseBackup(true);break;
+                    case 14:chooseRestore();break;
+                    case 15:new AlertDialog.Builder(this).setTitle("Monitor Telegram").setMessage(repo.monitor())
+                        .setPositiveButton("Tutup",null).show();break;
+                }
+            }).setNegativeButton("Tutup",null).show();
+    }
+    private void chooseBackup(boolean videos){
+        if(repo.snapshot().isEmpty()){showFailure("Belum ada katalog untuk dibackup");return;}
+        EditText field=input("Password backup (min. 8 karakter)",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD,"");
+        LinearLayout box=column();box.setPadding(dp(22),dp(8),dp(22),0);box.addView(field);
+        new AlertDialog.Builder(this).setTitle(videos?"Backup lengkap terenkripsi":"Backup katalog terenkripsi")
+            .setMessage(videos?"File backup dapat besar karena termasuk video lokal. Sesi login Telegram tidak ikut dicadangkan.":"Menyimpan daftar video, favorit, dan riwayat tontonan tanpa file video atau sesi Telegram.")
+            .setView(box).setNegativeButton("Batal",null).setPositiveButton("Pilih lokasi",(d,w)->{
+                if(field.getText().length()<8){showFailure("Password backup minimal 8 karakter");return;}
+                backupPassword=field.getText().toString();backupWithVideos=videos;
+                Intent i=new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                i.addCategory(Intent.CATEGORY_OPENABLE);i.setType("application/octet-stream");
+                i.putExtra(Intent.EXTRA_TITLE,"VaultGram-"+(videos?"lengkap":"katalog")+".vgb");
+                startActivityForResult(i,BACKUP_CREATE);
+            }).show();
+    }
+    private void chooseRestore(){
+        EditText field=input("Password backup",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD,"");
+        LinearLayout box=column();box.setPadding(dp(22),dp(8),dp(22),0);box.addView(field);
+        new AlertDialog.Builder(this).setTitle("Pulihkan backup terenkripsi")
+            .setMessage("Memulihkan daftar dan video, tetapi tidak memulihkan login Telegram.")
+            .setView(box).setNegativeButton("Batal",null).setPositiveButton("Pilih backup",(d,w)->{
+                if(field.getText().length()==0){showFailure("Password backup wajib diisi");return;}
+                backupPassword=field.getText().toString();
+                Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT);i.addCategory(Intent.CATEGORY_OPENABLE);
+                i.setType("*/*");startActivityForResult(i,BACKUP_OPEN);
+            }).show();
+    }
+    @Override protected void onActivityResult(int request,int result,Intent data){
+        super.onActivityResult(request,result,data);
+        if(result!=RESULT_OK || data==null || data.getData()==null)return;
+        String password=backupPassword;backupPassword=null;
+        if(password==null)return;
+        PrivateBackup.Callback cb=(message,ok)->new AlertDialog.Builder(this)
+            .setTitle(ok?"VaultGram":"Terjadi masalah")
+            .setMessage(message).setPositiveButton("Tutup",null).show();
+        if(request==BACKUP_CREATE)PrivateBackup.export(this,data.getData(),password,backupWithVideos,repo,cb);
+        else if(request==BACKUP_OPEN)PrivateBackup.restore(this,data.getData(),password,repo,cb);
+    }
+
     private final class GalleryAdapter extends BaseAdapter {
         private final ArrayList<VideoEntry> shown = new ArrayList<>();
         private final ExecutorService thumbs = Executors.newSingleThreadExecutor();
@@ -505,11 +736,20 @@ public final class MainActivity extends Activity implements TelegramRepository.L
             shown.clear();
             String q = text.trim().toLowerCase(Locale.ROOT);
             for (VideoEntry v : originals) {
+                if (filter == 5 && v.trashedAt == 0) continue;
+                if (filter != 5 && v.trashedAt != 0) continue;
                 if (filter == 1 && !v.complete()) continue;
                 if (filter == 2 && v.complete()) continue;
-                if (!q.isEmpty() && !v.title.toLowerCase(Locale.ROOT).contains(q)) continue;
+                if (filter == 3 && !v.favorite) continue;
+                if (filter == 4 && v.watched) continue;
+                if (!q.isEmpty() && !v.title.toLowerCase(Locale.ROOT).contains(q) &&
+                    !v.summary().toLowerCase(Locale.ROOT).contains(q)) continue;
                 shown.add(v);
             }
+            if(sortBy==1)Collections.reverse(shown);
+            else if(sortBy==2)shown.sort((a,b)->Long.compare(b.size(),a.size()));
+            else if(sortBy==3)shown.sort(Comparator.comparingLong(VideoEntry::size));
+            else if(sortBy==4)Collections.shuffle(shown,new Random(42));
             notifyDataSetChanged();
         }
         private void requestLocalFrame(VideoEntry e, int cacheKey) {
@@ -528,7 +768,7 @@ public final class MainActivity extends Activity implements TelegramRepository.L
                         if (bitmap != full) full.recycle();
                     }
                 } catch (Exception ignored) { }
-                finally { try { retriever.release(); } catch (Exception ignored) { } }
+                finally { retriever.release(); }
                 Bitmap finalBitmap = bitmap;
                 runOnUiThread(() -> {
                     if (adapter != this || !galleryVisible) return;
@@ -562,6 +802,12 @@ public final class MainActivity extends Activity implements TelegramRepository.L
                 TextView duration = label("00:00", 11, TEXT, true);
                 duration.setPadding(dp(7), dp(3), dp(7), dp(3));
                 duration.setBackground(round(Color.argb(210, 10, 16, 32), 7));
+                TextView options = label("⋮", 24, Color.WHITE, true);
+                options.setGravity(Gravity.CENTER);
+                options.setBackground(round(Color.argb(195,10,16,32),12));
+                FrameLayout.LayoutParams menuLp = new FrameLayout.LayoutParams(dp(34),dp(34),Gravity.TOP|Gravity.RIGHT);
+                menuLp.setMargins(0,dp(5),dp(5),0);
+                preview.addView(options,menuLp);
                 FrameLayout.LayoutParams durLp = new FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM | Gravity.RIGHT);
                 durLp.setMargins(0, 0, dp(8), dp(8));
                 preview.addView(duration, durLp);
@@ -576,14 +822,17 @@ public final class MainActivity extends Activity implements TelegramRepository.L
                 LinearLayout.LayoutParams statusLp = new LinearLayout.LayoutParams(-1, -2);
                 statusLp.topMargin = dp(8);
                 caption.addView(status, statusLp);
-                holder = new Holder(cover, duration, title, status);
+                holder = new Holder(cover, duration, title, status, options);
                 card.setTag(holder);
                 convertView = card;
             } else { holder = (Holder) convertView.getTag(); }
             VideoEntry e = getItem(position);
-            holder.title.setText(e.title);
+            holder.title.setText((e.favorite ? "★ " : "")+e.title);
             holder.duration.setText(e.durationLabel());
-            if (e.complete()) {
+            if (e.trashedAt != 0) {
+                holder.status.setText("◫ Di sampah · Pulihkan");
+                holder.status.setTextColor(MUTED);
+            } else if (e.complete()) {
                 holder.status.setText("✓ Diunduh · Putar");
                 holder.status.setTextColor(ACCENT);
             } else if (e.downloading() || e.progress() > 0) {
@@ -595,12 +844,10 @@ public final class MainActivity extends Activity implements TelegramRepository.L
             }
             int highKey = e.thumb != null ? e.thumb.id : e.fileId;
             Bitmap bitmap = cache.get(highKey);
-            if (bitmap == null && e.thumb != null && e.thumb.local != null &&
-                    e.thumb.local.isDownloadingCompleted && e.thumb.local.path != null &&
-                    new File(e.thumb.local.path).isFile()) {
+            if(bitmap == null && !e.thumbPath().isEmpty()) {
                 BitmapFactory.Options options = new BitmapFactory.Options();
                 options.inSampleSize = 2;
-                bitmap = BitmapFactory.decodeFile(e.thumb.local.path, options);
+                bitmap = BitmapFactory.decodeFile(e.thumbPath(), options);
                 if (bitmap != null) cache.put(highKey, bitmap);
             }
             if (bitmap == null && e.preview != null && e.preview.length > 0) {
@@ -614,32 +861,23 @@ public final class MainActivity extends Activity implements TelegramRepository.L
             holder.image.setImageBitmap(bitmap);
             // Even when a low-res minithumbnail exists, download its full-resolution replacement.
             repo.requestThumbnail(e);
-            if (cache.get(highKey) == null && e.complete() &&
-                    (e.thumb == null || e.thumb.local == null || !e.thumb.local.isDownloadingCompleted))
+            if (cache.get(highKey) == null && e.complete() && e.thumbPath().isEmpty())
                 requestLocalFrame(e, highKey);
-            convertView.setOnClickListener(v -> onVideoPressed(e));
-            convertView.setOnLongClickListener(v -> {
-                new AlertDialog.Builder(MainActivity.this).setTitle(e.title)
-                    .setItems(new String[]{"Simpan ke Downloads HP", "Putar"}, (d, choice) -> {
-                        if (choice == 0) {
-                            if (!e.localPath().isEmpty()) saveToPhone(e);
-                            else if (e.complete()) Toast.makeText(MainActivity.this,
-                                "Video sudah ada di penyimpanan HP", Toast.LENGTH_SHORT).show();
-                            else { repo.download(e); Toast.makeText(MainActivity.this,
-                                "Mengunduh video…", Toast.LENGTH_SHORT).show(); }
-                        } else onVideoPressed(e);
-                    }).show();
-                return true;
+            convertView.setOnClickListener(v -> {
+                if(e.trashedAt>0)showVideoMenu(e);
+                else onVideoPressed(e);
             });
+            convertView.setOnLongClickListener(v -> { showPreview(e); return true; });
+            holder.options.setOnClickListener(v -> showVideoMenu(e));
             return convertView;
         }
     }
 
     private static final class Holder {
         final ImageView image;
-        final TextView duration, title, status;
-        Holder(ImageView image, TextView duration, TextView title, TextView status) {
-            this.image = image; this.duration = duration; this.title = title; this.status = status;
+        final TextView duration, title, status, options;
+        Holder(ImageView image, TextView duration, TextView title, TextView status, TextView options) {
+            this.image = image; this.duration = duration; this.title = title; this.status = status; this.options=options;
         }
     }
 

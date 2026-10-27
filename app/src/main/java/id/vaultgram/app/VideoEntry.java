@@ -18,6 +18,14 @@ final class VideoEntry {
     TdApi.File video;
     TdApi.File thumb;
     String exportedUri;
+    String cachedPath = "";
+    String cachedThumbPath = "";
+    long cachedSize;
+    boolean favorite;
+    boolean watched;
+    int positionMs;
+    long trashedAt;
+
 
     VideoEntry(long messageId, int date, String name, int duration, TdApi.File video,
                TdApi.File thumb, byte[] preview) {
@@ -31,18 +39,58 @@ final class VideoEntry {
         this.preview = preview;
     }
 
+    VideoEntry(long messageId, int date, String title, int duration, int fileId,
+               long size, String path, String thumbPath, byte[] preview) {
+        this.messageId = messageId;
+        this.date = date;
+        this.title = title;
+        this.duration = duration;
+        this.fileId = fileId;
+        this.video = null;
+        this.thumb = null;
+        this.cachedSize = size;
+        this.cachedPath = path == null ? "" : path;
+        this.cachedThumbPath = thumbPath == null ? "" : thumbPath;
+        this.preview = preview;
+    }
+
+    void preserve(VideoEntry existing) {
+        this.exportedUri = existing.exportedUri;
+        this.cachedPath = existing.cachedPath;
+        this.cachedThumbPath = existing.cachedThumbPath;
+        this.cachedSize = existing.cachedSize;
+        this.favorite = existing.favorite;
+        this.watched = existing.watched;
+        this.positionMs = existing.positionMs;
+        this.trashedAt = existing.trashedAt;
+    }
+
+    long size() {
+        return video == null ? cachedSize : Math.max(video.size, video.expectedSize);
+    }
+
+    String thumbPath() {
+        if (thumb != null && thumb.local != null && thumb.local.isDownloadingCompleted &&
+                thumb.local.path != null && new File(thumb.local.path).isFile())
+            return thumb.local.path;
+        return cachedThumbPath != null && new File(cachedThumbPath).isFile() ? cachedThumbPath : "";
+    }
+
     boolean fileComplete() {
         return video != null && video.local != null && video.local.isDownloadingCompleted
             && video.local.path != null && !video.local.path.isEmpty()
             && new File(video.local.path).isFile();
     }
 
-    boolean complete() { return fileComplete() || (exportedUri != null && !exportedUri.isEmpty()); }
+    boolean complete() { return !localPath().isEmpty() || (exportedUri != null && !exportedUri.isEmpty()); }
 
-    String localPath() { return fileComplete() ? video.local.path : ""; }
+    String localPath() {
+        if (fileComplete()) return video.local.path;
+        return cachedPath != null && !cachedPath.isEmpty() && new File(cachedPath).isFile() ? cachedPath : "";
+    }
 
     Uri playableUri() {
-        if (fileComplete()) return Uri.fromFile(new File(video.local.path));
+        if (!localPath().isEmpty()) return Uri.fromFile(new File(localPath()));
         return exportedUri == null ? null : Uri.parse(exportedUri);
     }
 
@@ -56,7 +104,7 @@ final class VideoEntry {
     boolean downloading() { return video != null && video.local != null && video.local.isDownloadingActive; }
 
     String summary() {
-        long size = video != null ? Math.max(video.expectedSize, video.size) : 0;
+        long size = size();
         String readable = size > 0 ? String.format(Locale.US, "%.1f MB", size / 1048576.0) : "Ukuran tidak diketahui";
         return dateLabel(date) + "  ·  " + readable;
     }

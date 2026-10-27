@@ -1,179 +1,122 @@
 package id.vaultgram.app;
 
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.app.Application;
+import android.app.AlertDialog;
 import android.os.Bundle;
+import android.os.Build;
 import android.os.SystemClock;
-import android.text.InputType;
-import android.view.Gravity;
+import android.view.WindowManager;
 import android.widget.EditText;
+import android.text.InputType;
 import android.widget.LinearLayout;
 import android.widget.Toast;
+import android.util.Base64;
 
-import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
-import android.util.Base64;
 
-/** App-only password gate. Telegram's separate two-factor password is unaffected. */
+/** A separate full-screen lock activity protects both the gallery and player. */
 public final class AppLock extends Application implements Application.ActivityLifecycleCallbacks {
     private static boolean unlocked;
     private static boolean showing;
-    private static Activity owner;
+    private static int started;
+    private static long backgroundAt = -1L;
     private static int attempts;
     private static long blockedUntil;
-    private int started;
 
-    @Override public void onCreate() {
-        super.onCreate();
-        registerActivityLifecycleCallbacks(this);
-    }
-
+    @Override public void onCreate() { super.onCreate(); registerActivityLifecycleCallbacks(this); }
     @Override public void onActivityStarted(Activity a) { started++; }
     @Override public void onActivityStopped(Activity a) {
-        started = Math.max(0, started - 1);
-        if (started == 0) unlocked = false;
+        started = Math.max(0,started-1);
+        if (started == 0) backgroundAt = SystemClock.elapsedRealtime();
     }
-    @Override public void onActivityDestroyed(Activity a) {
-        if (owner == a) { showing = false; owner = null; }
-    }
-    @Override public void onActivityCreated(Activity a, Bundle b) {}
-    @Override public void onActivityResumed(Activity a) {}
+    @Override public void onActivityCreated(Activity a, Bundle state) { privacy(a); }
+    @Override public void onActivityResumed(Activity a) { privacy(a); }
     @Override public void onActivityPaused(Activity a) {}
+    @Override public void onActivityDestroyed(Activity a) {
+        if (a instanceof LockActivity) showing=false;
+    }
     @Override public void onActivitySaveInstanceState(Activity a, Bundle b) {}
 
-    static void gate(Activity activity) {
-        if (unlocked || showing || activity.isFinishing()) return;
-        String record = new SecurePrefs(activity).get("app_lock_record");
-        if (record.isEmpty()) showSet(activity, true);
-        else showUnlock(activity, record);
+    static void privacy(Activity a) {
+        if (a instanceof LockActivity || !"off".equals(new SecurePrefs(a).get("block_screenshots")))
+            a.getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        else a.getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        if (Build.VERSION.SDK_INT >= 33) a.setRecentsScreenshotEnabled(false);
     }
-
-    private static EditText passwordInput(Activity a, String hint) {
-        EditText field = new EditText(a);
-        field.setSingleLine(true);
-        field.setHint(hint);
-        field.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        return field;
+    static long timeout(Activity a) {
+        String n=new SecurePrefs(a).get("lock_timeout_ms");
+        try { return n.isEmpty() ? 60000L : Math.max(0,Math.min(300000L,Long.parseLong(n))); }
+        catch (Exception e) { return 60000L; }
     }
-
-    private static LinearLayout form(Activity a, EditText... inputs) {
-        LinearLayout box = new LinearLayout(a);
-        box.setPadding(dp(a, 22), dp(a, 4), dp(a, 22), 0);
-        box.setOrientation(LinearLayout.VERTICAL);
-        for (EditText input : inputs) box.addView(input);
-        return box;
+    static void gate(Activity a) {
+        if (a instanceof LockActivity || a.isFinishing()) return;
+        if (unlocked && (backgroundAt < 0 || SystemClock.elapsedRealtime()-backgroundAt < timeout(a))) return;
+        unlocked=false;
+        if (!showing) {
+            showing=true;
+            a.startActivity(new android.content.Intent(a,LockActivity.class));
+        }
     }
-
-    private static int dp(Activity a, float n) { return Math.round(n * a.getResources().getDisplayMetrics().density); }
-
-    private static void showSet(Activity a, boolean firstRun) {
-        EditText one = passwordInput(a, "Password baru (minimal 4 karakter)");
-        EditText two = passwordInput(a, "Ulangi password baru");
-        AlertDialog dialog = new AlertDialog.Builder(a)
-            .setTitle(firstRun ? "Buat password VaultGram" : "Ganti password VaultGram")
-            .setMessage("Password ini dipakai setiap aplikasi dibuka, terpisah dari password Telegram.")
-            .setView(form(a, one, two))
-            .setCancelable(false)
-            .setPositiveButton("Simpan", null)
-            .setNegativeButton(firstRun ? "Keluar" : "Batal", (d, w) -> { if (firstRun) a.finish(); })
-            .create();
-        register(dialog, a);
-        dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-            String p = one.getText().toString();
-            if (p.length() < 4 || p.length() > 128) { one.setError("Gunakan 4–128 karakter"); return; }
-            if (!p.equals(two.getText().toString())) { two.setError("Konfirmasi tidak cocok"); return; }
-            try {
-                new SecurePrefs(a).put("app_lock_record", createRecord(p));
-                unlocked = true;
-                attempts = 0;
-                dialog.dismiss();
-                Toast.makeText(a, "Password VaultGram aktif", Toast.LENGTH_SHORT).show();
-            } catch (Exception e) { one.setError("Gagal menyimpan password"); }
-        }));
-        dialog.show();
+    static boolean isUnlocked() { return unlocked; }
+    static void unlocked() {
+        unlocked=true;showing=false;backgroundAt=-1L;attempts=0;blockedUntil=0;
     }
-
-    private static void showUnlock(Activity a, String record) {
-        EditText password = passwordInput(a, "Password VaultGram");
-        AlertDialog dialog = new AlertDialog.Builder(a)
-            .setTitle("VaultGram terkunci")
-            .setView(form(a, password))
-            .setCancelable(false)
-            .setPositiveButton("Buka", null)
-            .setNegativeButton("Keluar", (d, w) -> a.finish())
-            .create();
-        register(dialog, a);
-        dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-            if (SystemClock.elapsedRealtime() < blockedUntil) {
-                password.setError("Terlalu banyak percobaan. Coba lagi dalam 30 detik."); return;
-            }
-            if (!matches(record, password.getText().toString())) {
-                password.setText("");
-                password.setError("Password salah");
-                if (++attempts >= 5) { blockedUntil = SystemClock.elapsedRealtime() + 30000; attempts = 0; }
-                return;
-            }
-            attempts = 0;
-            unlocked = true;
-            dialog.dismiss();
-        }));
-        dialog.show();
+    static void lock(Activity a) {
+        unlocked=false;backgroundAt=-1L;gate(a);
     }
+    static boolean canTry() { return SystemClock.elapsedRealtime() >= blockedUntil; }
+    static long waitSeconds() { return Math.max(0,(blockedUntil-SystemClock.elapsedRealtime()+999)/1000); }
+    static boolean check(Activity a,String p) {
+        if (!canTry()) return false;
+        if (matches(new SecurePrefs(a).get("app_lock_record"),p)) { unlocked();return true; }
+        if (++attempts >= 5) { attempts=0;blockedUntil=SystemClock.elapsedRealtime()+30000; }
+        return false;
+    }
+    static boolean hasPassword(Activity a) { return !new SecurePrefs(a).get("app_lock_record").isEmpty(); }
+    static boolean saveNew(Activity a,String p) {
+        if(p.length()<4 || p.length()>128) return false;
+        try { new SecurePrefs(a).put("app_lock_record",createRecord(p)); unlocked(); return true; }
+        catch(Exception e){ return false; }
+    }
+    static boolean biometricEnabled(Activity a) { return !"off".equals(new SecurePrefs(a).get("fingerprint")); }
 
     static void change(Activity a) {
-        String record = new SecurePrefs(a).get("app_lock_record");
-        if (record.isEmpty()) { showSet(a, false); return; }
-        EditText old = passwordInput(a, "Password saat ini");
-        EditText one = passwordInput(a, "Password baru");
-        EditText two = passwordInput(a, "Ulangi password baru");
-        AlertDialog dialog = new AlertDialog.Builder(a)
-            .setTitle("Ubah password VaultGram")
-            .setView(form(a, old, one, two))
-            .setNegativeButton("Batal", null)
-            .setPositiveButton("Simpan", null)
-            .create();
-        dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-            if (!matches(record, old.getText().toString())) { old.setError("Password lama salah"); return; }
-            String p = one.getText().toString();
-            if (p.length() < 4 || p.length() > 128) { one.setError("Gunakan 4–128 karakter"); return; }
-            if (!p.equals(two.getText().toString())) { two.setError("Konfirmasi tidak cocok"); return; }
-            try {
-                new SecurePrefs(a).put("app_lock_record", createRecord(p));
-                dialog.dismiss();
-                Toast.makeText(a, "Password berhasil diubah", Toast.LENGTH_SHORT).show();
-            } catch (Exception e) { one.setError("Gagal menyimpan password"); }
-        }));
-        dialog.show();
+        LinearLayout box=new LinearLayout(a);
+        box.setPadding(50,12,50,12); box.setOrientation(LinearLayout.VERTICAL);
+        EditText old=passwordInput(a,"Password saat ini");
+        EditText next=passwordInput(a,"Password baru (min. 4 karakter)");
+        EditText confirm=passwordInput(a,"Ulangi password baru");
+        box.addView(old);box.addView(next);box.addView(confirm);
+        AlertDialog d=new AlertDialog.Builder(a).setTitle("Ganti password VaultGram")
+            .setView(box).setNegativeButton("Batal",null).setPositiveButton("Simpan",null).create();
+        d.setOnShowListener(v -> d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(b -> {
+            if (!checkWithoutLock(a,old.getText().toString())) {old.setError("Password lama salah");return;}
+            if (!next.getText().toString().equals(confirm.getText().toString())) {confirm.setError("Tidak cocok");return;}
+            if (!saveNew(a,next.getText().toString())) {next.setError("Minimal 4 karakter");return;}
+            d.dismiss();Toast.makeText(a,"Password diperbarui",Toast.LENGTH_SHORT).show();
+        }));d.show();
     }
-
-    private static void register(AlertDialog dialog, Activity a) {
-        showing = true;
-        owner = a;
-        dialog.setOnDismissListener(d -> { if (owner == a) { showing = false; owner = null; } });
+    private static EditText passwordInput(Activity a,String hint) {
+        EditText e=new EditText(a);e.setSingleLine(true);e.setHint(hint);
+        e.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);return e;
     }
-
-    private static byte[] derive(String pass, byte[] salt) throws Exception {
-        PBEKeySpec key = new PBEKeySpec(pass.toCharArray(), salt, 120000, 256);
-        try { return SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(key).getEncoded(); }
-        finally { key.clearPassword(); }
+    private static boolean checkWithoutLock(Activity a,String p){return matches(new SecurePrefs(a).get("app_lock_record"),p);}
+    private static byte[] derive(String p,byte[] salt)throws Exception{
+        PBEKeySpec spec=new PBEKeySpec(p.toCharArray(),salt,120000,256);
+        try{return SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).getEncoded();}
+        finally{spec.clearPassword();}
     }
-
-    private static String createRecord(String password) throws Exception {
-        byte[] salt = new byte[16];
-        new SecureRandom().nextBytes(salt);
-        return Base64.encodeToString(salt, Base64.NO_WRAP) + ":" +
-               Base64.encodeToString(derive(password, salt), Base64.NO_WRAP);
+    private static String createRecord(String p)throws Exception{
+        byte[] salt=new byte[16];new SecureRandom().nextBytes(salt);
+        return Base64.encodeToString(salt,Base64.NO_WRAP)+":"+Base64.encodeToString(derive(p,salt),Base64.NO_WRAP);
     }
-
-    private static boolean matches(String record, String password) {
-        try {
-            String[] parts = record.split(":", -1);
-            return parts.length == 2 && MessageDigest.isEqual(
-                Base64.decode(parts[1], Base64.NO_WRAP), derive(password, Base64.decode(parts[0], Base64.NO_WRAP)));
-        } catch (Exception e) { return false; }
+    private static boolean matches(String record,String p){
+        try{String[] a=record.split(":",-1);
+            return a.length==2 && MessageDigest.isEqual(Base64.decode(a[1],Base64.NO_WRAP),derive(p,Base64.decode(a[0],Base64.NO_WRAP)));
+        }catch(Exception e){return false;}
     }
 }

@@ -8,6 +8,11 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.BatteryManager;
+import android.content.Intent;
+import java.util.Calendar;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import org.drinkless.tdlib.Client;
 import org.drinkless.tdlib.TdApi;
@@ -47,6 +52,13 @@ final class TelegramRepository {
     private final Context context;
     private final Handler main = new Handler(Looper.getMainLooper());
     final SecurePrefs prefs;
+    private final CatalogStore catalog;
+    private final ExecutorService catalogIo = Executors.newSingleThreadExecutor();
+    private final LinkedHashMap<Long, VideoEntry> dirtyCatalog = new LinkedHashMap<>();
+    private final Runnable flushTask = this::flushCatalog;
+    private boolean cacheLoaded;
+    private long lastRecentAt;
+    private int newCount;
     private Client client;
     private Listener listener;
     private Stage stage = Stage.SETUP;
@@ -90,6 +102,15 @@ final class TelegramRepository {
     private TelegramRepository(Context context) {
         this.context = context;
         prefs = new SecurePrefs(context);
+        catalog = new CatalogStore(context);
+        botName = prefs.get("bot");
+        chatId = parseLong(prefs.get("bot_chat_id"));
+        if (chatId != 0 && !botName.isEmpty()) {
+            checkpointSet = !prefs.get(checkpointKey()).isEmpty();
+            seenId = parseLong(prefs.get(checkpointKey()));
+            loadCached(chatId);
+            loadPending();
+        }
         network = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
         wifi = activeWifi();
         if (network != null) {
@@ -152,7 +173,7 @@ final class TelegramRepository {
                 if (!isSyncing && checkpointSet && message.id > seenId) {
                     seenId = message.id;
                     prefs.put(checkpointKey(), Long.toString(seenId));
-                    if (added) queueAuto(findMessage(message.id));
+                    if (added) { newCount++; queueAuto(findMessage(message.id)); }
                 }
                 if (added) notifyVideos();
             });
@@ -177,7 +198,7 @@ final class TelegramRepository {
                 p.systemLanguageCode = "id";
                 p.deviceModel = Build.MODEL;
                 p.systemVersion = Build.VERSION.RELEASE;
-                p.applicationVersion = "1.1.0";
+                p.applicationVersion = "1.2.0";
                 client.send(p, this::checkError);
             } catch (Exception e) { postError("Konfigurasi Telegram gagal: " + e.getMessage()); }
         } else if (state instanceof TdApi.AuthorizationStateWaitPhoneNumber) {
@@ -228,7 +249,11 @@ final class TelegramRepository {
             if (listener != null) listener.onAccount(account);
             String bot = prefs.get("bot");
             if (bot.isEmpty()) bot = prefs.get("pending_bot");
-            if (!bot.isEmpty()) selectBot(bot);
+            if (!bot.isEmpty()) {
+                // A saved chat ID is sufficient for incremental history reads.
+                if (chatId != 0 && bot.equalsIgnoreCase(botName)) syncRecent();
+                else selectBot(bot);
+            }
         }));
     }
 
@@ -283,8 +308,11 @@ final class TelegramRepository {
                     autoActiveFiles.clear();
                     manuallyRequested.clear();
                 }
+                boolean changedBot = chatId != chat.id;
                 chatId = chat.id;
                 botName = username;
+                prefs.put("bot_chat_id", Long.toString(chatId));
+                if (changedBot || !cacheLoaded) loadCached(chatId);
                 String stored = prefs.get(checkpointKey());
                 checkpointSet = !stored.isEmpty();
                 seenId = parseLong(stored);
@@ -292,7 +320,8 @@ final class TelegramRepository {
                 prefs.put("bot", username);
                 prefs.put("pending_bot", "");
                 if (listener != null) listener.onBot(username);
-                sync();
+                if (!checkpointSet || items.isEmpty()) fullSync();
+                else syncRecent();
             }));
         }));
     }
@@ -305,21 +334,95 @@ final class TelegramRepository {
         return (question >= 0 ? value.substring(0, question) : value).trim();
     }
 
-    void sync() {
-        if (chatId == 0 || client == null) return;
-        final int token = ++generation;
-        syncHighWater = seenId;
-        historyHighWater = seenId;
+    private void loadCached(long id) {
         items.clear();
         playback.clear();
-        localScanGeneration++;
         messagesSeen.clear();
         fileById.clear();
         thumbById.clear();
         thumbnailsRequested.clear();
+        try {
+            List<VideoEntry> cached = catalog.load(id);
+            long expiry = System.currentTimeMillis() - 7L * 86400000L;
+            for (VideoEntry e : cached) {
+                if (e.trashedAt > 0 && e.trashedAt < expiry) continue;
+                items.add(e);
+                messagesSeen.add(e.messageId);
+                fileById.computeIfAbsent(e.fileId, key -> new ArrayList<>()).add(e);
+            }
+            cacheLoaded = true;
+        } catch (Exception e) { postError("Database lokal tidak dapat dibaca: " + e.getMessage()); }
+        notifyVideos();
+    }
+
+    private void markDirty(VideoEntry entry) {
+        if (entry == null || chatId == 0) return;
+        dirtyCatalog.put(entry.messageId, entry);
+        main.removeCallbacks(flushTask);
+        if (dirtyCatalog.size() >= 250) flushCatalog();
+        else main.postDelayed(flushTask, 350);
+    }
+    private void flushCatalog() {
+        if (dirtyCatalog.isEmpty() || chatId == 0) return;
+        final long selected = chatId;
+        List<VideoEntry> values = new ArrayList<>(dirtyCatalog.values());
+        dirtyCatalog.clear();
+        catalogIo.execute(() -> {
+            try { catalog.saveBatch(selected, values); }
+            catch (Exception ignored) { /* Cached view remains usable; next sync will retry. */ }
+        });
+    }
+
+    // Normal refresh never clears the gallery or re-reads older Telegram history.
+    void sync() { syncRecent(); }
+    void syncRecent() {
+        if (chatId == 0 || client == null || isSyncing) return;
+        if (System.currentTimeMillis() - lastRecentAt < 12000) return;
+        lastRecentAt = System.currentTimeMillis();
+        if (!checkpointSet || items.isEmpty()) { fullSync(); return; }
+        final int token = ++generation;
+        syncHighWater = seenId;
+        historyHighWater = seenId;
+        isSyncing = true;
+        setStatus("Memeriksa video terbaru…");
+        nextRecentPage(0, token, 0);
+    }
+    private void nextRecentPage(long fromId, int token, int page) {
+        if (token != generation || client == null || !isSyncing) return;
+        if (page >= 100) { endSync(token, "Batas pengecekan video baru tercapai."); return; }
+        client.send(new TdApi.GetChatHistory(chatId, fromId, 0, 100, false), result -> main.post(() -> {
+            if (token != generation || !isSyncing) return;
+            if (result instanceof TdApi.Error) {
+                endSync(token, "Cek video baru gagal: " + ((TdApi.Error) result).message); return;
+            }
+            if (!(result instanceof TdApi.Messages)) { endSync(token, "Riwayat tidak tersedia."); return; }
+            TdApi.Message[] messages = ((TdApi.Messages) result).messages;
+            if (messages == null || messages.length == 0) { endSync(token, "Galeri terbaru."); return; }
+            long last = fromId;
+            boolean reached = false;
+            for (TdApi.Message message : messages) {
+                if (message == null) continue;
+                if (last == 0 || message.id < last) last = message.id;
+                if (message.id <= syncHighWater) { reached = true; continue; }
+                historyHighWater = Math.max(historyHighWater, message.id);
+                if (addMessage(message, true)) { newCount++; queueAuto(findMessage(message.id)); }
+            }
+            items.sort((a,b) -> Long.compare(b.messageId,a.messageId));
+            notifyVideos();
+            if (reached || last == fromId || last == 0) endSync(token, "Galeri terbaru.");
+            else { long next=last; main.postDelayed(() -> nextRecentPage(next,token,page+1),40); }
+        }));
+    }
+
+    void fullSync() {
+        if (chatId == 0 || client == null) return;
+        final int token = ++generation;
+        syncHighWater = seenId;
+        historyHighWater = seenId;
+        // Preserve cached data and downloaded state while historical pagination runs.
         isSyncing = true;
         notifyVideos();
-        setStatus("Membaca riwayat video dari @" + botName + "…");
+        setStatus("Sinkronisasi penuh dari @" + botName + "…");
         nextPage(0, token, 0);
     }
 
@@ -368,20 +471,39 @@ final class TelegramRepository {
         seenId = Math.max(seenId, historyHighWater);
         checkpointSet = true;
         prefs.put(checkpointKey(), Long.toString(seenId));
+        items.sort((a,b) -> Long.compare(b.messageId,a.messageId));
+        flushCatalog();
         notifyVideos();
         setStatus(message + " " + items.size() + " video.");
-        scanDownloads();
+        if (!message.startsWith("Galeri")) scanDownloads();
         pumpAuto();
     }
 
     private boolean addMessage(TdApi.Message message, boolean atFront) {
-        if (messagesSeen.contains(message.id)) return false;
+        if (messagesSeen.contains(message.id)) {
+            VideoEntry old = findMessage(message.id);
+            if (old != null && old.video == null) {
+                VideoEntry restored = toVideo(message);
+                if (restored == null) return false;
+                restored.preserve(old);
+                int index = items.indexOf(old);
+                if (index >= 0) items.set(index, restored);
+                List<VideoEntry> same = fileById.get(old.fileId);
+                if (same != null) same.remove(old);
+                fileById.computeIfAbsent(restored.fileId,id -> new ArrayList<>()).add(restored);
+                if (restored.thumb != null)
+                    thumbById.computeIfAbsent(restored.thumb.id,id -> new ArrayList<>()).add(restored);
+                markDirty(restored);
+            }
+            return false;
+        }
         VideoEntry entry = toVideo(message);
         messagesSeen.add(message.id);
         if (entry == null) return false;
         if (atFront) items.add(0, entry); else items.add(entry);
         fileById.computeIfAbsent(entry.fileId, id -> new ArrayList<>()).add(entry);
         if (entry.thumb != null) thumbById.computeIfAbsent(entry.thumb.id, id -> new ArrayList<>()).add(entry);
+        markDirty(entry);
         return true;
     }
 
@@ -431,6 +553,12 @@ final class TelegramRepository {
             });
     }
 
+    void pauseDownload(VideoEntry video) {
+        if(client==null || video==null)return;
+        manuallyRequested.remove(video.fileId);
+        autoActiveFiles.remove(video.fileId);
+        client.send(new TdApi.CancelDownloadFile(video.fileId,false),this::checkError);
+    }
     void download(VideoEntry video) {
         if (client == null || chatId == 0 || video == null || video.complete()) return;
         // A tap is an explicit manual download: cellular use is permitted by user choice.
@@ -451,12 +579,12 @@ final class TelegramRepository {
         boolean changed = false;
         List<VideoEntry> tracked = fileById.get(updated.id);
         if (tracked != null) {
-            for (VideoEntry e : tracked) e.video = updated;
+            for (VideoEntry e : tracked) { e.video = updated; markDirty(e); }
             changed = true;
         }
         List<VideoEntry> thumbs = thumbById.get(updated.id);
         if (thumbs != null) {
-            for (VideoEntry e : thumbs) e.thumb = updated;
+            for (VideoEntry e : thumbs) { e.thumb = updated; markDirty(e); }
             changed = true;
         }
         if (autoActiveFiles.contains(updated.id) && updated.local != null &&
@@ -541,7 +669,13 @@ final class TelegramRepository {
         pumpAuto();
     }
     private void pumpAuto() {
-        if (!autoWifiEnabled() || !wifi || client == null || chatId == 0) return;
+        if (!autoWifiEnabled() || !wifi || client == null || chatId == 0 || !allowedSchedule()) return;
+        try {
+            String lim=prefs.get("storage_limit_gb");
+            if(!lim.isEmpty() && estimatedBytes()>=Long.parseLong(lim)*1073741824L){
+                setStatus("Batas penyimpanan auto-download tercapai");return;
+            }
+        } catch(Exception ignored) {}
         for (Map.Entry<Long, VideoEntry> item : new ArrayList<>(autoQueue.entrySet())) {
             if (autoActiveFiles.size() >= 2) break;
             VideoEntry video = item.getValue();
@@ -573,6 +707,7 @@ final class TelegramRepository {
     void rememberExport(VideoEntry video, android.net.Uri uri) {
         LocalVideos.remember(context, chatId, video, uri);
         video.exportedUri = uri.toString();
+        markDirty(video);
         notifyVideos();
     }
     void scanDownloads() {
@@ -584,13 +719,92 @@ final class TelegramRepository {
             Map<Long, String> known = LocalVideos.find(context, selectedChat, current);
             main.post(() -> {
                 if (token != localScanGeneration || chatId != selectedChat) return;
-                for (VideoEntry video : current) video.exportedUri = known.get(video.messageId);
+                for (VideoEntry video : current) {
+                    if (known.containsKey(video.messageId)) {
+                        video.exportedUri = known.get(video.messageId);
+                        markDirty(video);
+                    }
+                }
                 notifyVideos();
                 setStatus("Pemeriksaan unduhan selesai · " + current.size() + " video");
             });
         }, "VaultGram-ScanDownloads").start();
     }
     List<VideoEntry> snapshot() { return new ArrayList<>(items); }
+    boolean hasCachedGallery() { return cacheLoaded && chatId != 0 && !items.isEmpty(); }
+    int newVideos() { return newCount; }
+    void markGallerySeen() { newCount = 0; }
+    void setFavorite(VideoEntry e, boolean value) {
+        e.favorite=value; saveUser(e); notifyVideos();
+    }
+    void setWatched(VideoEntry e, boolean value) {
+        e.watched=value; saveUser(e); notifyVideos();
+    }
+    void savePosition(VideoEntry e, int milliseconds) {
+        e.positionMs=Math.max(0,milliseconds); e.watched=true; saveUser(e);
+    }
+    void trash(VideoEntry e) { e.trashedAt=System.currentTimeMillis(); saveUser(e); notifyVideos(); }
+    void restore(VideoEntry e) { e.trashedAt=0; saveUser(e); notifyVideos(); }
+    private void saveUser(VideoEntry e) {
+        long selected=chatId;
+        catalogIo.execute(() -> catalog.saveUser(selected,e));
+    }
+    long chat() { return chatId; }
+    void importCatalog(long chat,String name,String account,List<VideoEntry> imported) {
+        if(!prefs.get("account_id").isEmpty() && !prefs.get("account_id").equals(account))
+            throw new IllegalArgumentException("Akun Telegram tidak cocok dengan backup");
+        if(prefs.get("account_id").isEmpty() && !account.isEmpty()) prefs.put("account_id",account);
+        prefs.put("bot",name);
+        prefs.put("bot_chat_id",Long.toString(chat));
+        chatId=chat;botName=name;
+        catalogIo.execute(()->{
+            catalog.saveBatch(chat,imported);
+            for(VideoEntry e:imported)catalog.saveUser(chat,e);
+        });
+        items.clear();messagesSeen.clear();fileById.clear();thumbById.clear();
+        for(VideoEntry e:imported){
+            items.add(e);messagesSeen.add(e.messageId);
+            fileById.computeIfAbsent(e.fileId,k->new ArrayList<>()).add(e);
+        }
+        items.sort((a,b)->Long.compare(b.messageId,a.messageId));
+        cacheLoaded=true;
+        if(listener!=null)listener.onBot(name);
+        notifyVideos();
+    }
+    long estimatedBytes() {
+        long n=0;
+        Set<String> paths = new HashSet<>();
+        for(VideoEntry v:items) {
+            String p=v.localPath();
+            if(!p.isEmpty() && paths.add(p)) n += new File(p).length();
+        }
+        return n;
+    }
+    String monitor() {
+        return "Koneksi: " + (client == null ? "Offline" : "Telegram aktif") +
+            "\nWi-Fi: " + (wifi ? "Aktif" : "Tidak aktif") +
+            "\nVideo baru: " + newCount +
+            "\nAntrean auto-download: " + pendingAutoIds.size() +
+            "\nDownload aktif: " + autoActiveFiles.size() +
+            "\nSinkronisasi: " + (isSyncing ? "Berjalan" : "Siap");
+    }
+    boolean nightOnly() { return "on".equals(prefs.get("night_only")); }
+    void setNightOnly(boolean yes) { prefs.put("night_only",yes ? "on":"off"); pumpAuto(); }
+    boolean chargingOnly() { return "on".equals(prefs.get("charging_only")); }
+    void setChargingOnly(boolean yes) { prefs.put("charging_only",yes ? "on":"off"); pumpAuto(); }
+    private boolean allowedSchedule() {
+        if (nightOnly()) {
+            int hour=Calendar.getInstance().get(Calendar.HOUR_OF_DAY);
+            if (hour >= 6 && hour < 23) return false;
+        }
+        if (chargingOnly()) {
+            Intent i=context.registerReceiver(null,new android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+            if (i == null) return false;
+            int state=i.getIntExtra(BatteryManager.EXTRA_STATUS,-1);
+            if (state != BatteryManager.BATTERY_STATUS_CHARGING && state != BatteryManager.BATTERY_STATUS_FULL) return false;
+        }
+        return true;
+    }
     boolean syncing() { return isSyncing; }
     boolean hasBot() { return chatId != 0; }
     String bot() { return botName; }
