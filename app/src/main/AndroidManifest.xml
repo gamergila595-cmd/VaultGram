@@ -20,6 +20,9 @@
             android:exported="false"
             android:grantUriPermissions="true" />
         <activity android:name=".PrivateMediaActivity" android:exported="false" />
+        <activity android:name=".VerticalFeedActivity"
+            android:exported="false"
+            android:screenOrientation="unspecified" />
         <activity
             android:name=".PlayerActivity"
             android:exported="false"

@@ -550,9 +550,8 @@ public final class MainActivity extends Activity implements TelegramRepository.L
         List<VideoEntry> play=adapter.displayed();
         if(random)Collections.shuffle(play);
         repo.setPlayback(play);
-        Intent intent=new Intent(this,PlayerActivity.class);
+        Intent intent=new Intent(this,VerticalFeedActivity.class);
         intent.putExtra("message_id",play.get(0).messageId);
-        intent.putExtra("feed_mode",true);
         startActivity(intent);
     }
     private void showHistory(){
