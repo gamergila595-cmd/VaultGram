@@ -24,6 +24,8 @@ final class TelegramCacheBridge {
     private static final int REQ = 39017;
     private static volatile ITelegramCacheService service;
     private static volatile boolean binding;
+    private static volatile long bindStartedAt;
+    private static volatile String bindError = "";
     private static final Map<Long, String> matched = Collections.synchronizedMap(new HashMap<>());
     private static volatile int indexedCount;
 
@@ -31,11 +33,23 @@ final class TelegramCacheBridge {
         @Override public void onServiceConnected(ComponentName name, IBinder binder) {
             service = ITelegramCacheService.Stub.asInterface(binder);
             binding = false;
+            bindError = "";
         }
         @Override public void onServiceDisconnected(ComponentName name) {
             service = null;
             binding = false;
             matched.clear();
+            bindError = "Layanan Shizuku terputus.";
+        }
+        @Override public void onBindingDied(ComponentName name) {
+            service = null;
+            binding = false;
+            bindError = "Layanan Shizuku berhenti saat menghubungkan.";
+        }
+        @Override public void onNullBinding(ComponentName name) {
+            service = null;
+            binding = false;
+            bindError = "Layanan Shizuku tidak mengembalikan Binder.";
         }
     };
 
@@ -60,16 +74,22 @@ final class TelegramCacheBridge {
             } catch (Throwable e) { return "Permintaan izin Shizuku gagal: " + e.getMessage(); }
         }
         if (service != null) return "Telegram Cache Bridge sudah terhubung.";
-        if (binding) return "Menghubungkan layanan Shizuku...";
+        if (binding && System.currentTimeMillis() - bindStartedAt < 12000)
+            return "Menghubungkan layanan Shizuku...";
+        if (binding) {
+            binding = false;
+            bindError = "Timeout koneksi Shizuku (12 detik).";
+        }
         try {
             binding = true;
+            bindStartedAt = System.currentTimeMillis();
             Shizuku.UserServiceArgs args = new Shizuku.UserServiceArgs(
                     new ComponentName(activity, TelegramCacheService.class))
                     .processNameSuffix("telegram_cache")
                     .daemon(false)
                     .version(1);
             Shizuku.bindUserService(args, CONNECTION);
-            return "Menghubungkan Telegram Cache Bridge. Coba ketuk lagi untuk melihat status.";
+            return "Memulai jembatan cache. " + bindError + " Tunggu sebentar lalu coba lagi.";
         } catch (Throwable e) {
             binding = false;
             return "Gagal menghubungkan Shizuku: " + e.getMessage();
