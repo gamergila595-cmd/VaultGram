@@ -321,7 +321,8 @@ public final class MainActivity extends Activity implements TelegramRepository.L
         autoRow.setBackground(round(PANEL, 14));
         LinearLayout.LayoutParams autoLp = new LinearLayout.LayoutParams(-1, -2);
         autoLp.topMargin = dp(7);
-        page.addView(autoRow, autoLp);
+        // Advanced auto-download control lives in Settings, not the gallery header.
+        // Keep the control constructed so existing settings state remains available.
         TextView description = label("Auto-download video baru", 12, TEXT, true);
         autoRow.addView(description, new LinearLayout.LayoutParams(0, -2, 1));
         autoWifiText = label("", 11, ACCENT, true);
@@ -343,7 +344,7 @@ public final class MainActivity extends Activity implements TelegramRepository.L
         LinearLayout.LayoutParams statsLp = new LinearLayout.LayoutParams(-1, -2);
         statsLp.topMargin = dp(15);
         statsLp.bottomMargin = dp(10);
-        page.addView(scanRow, statsLp);
+        // Scan is available from Settings; avoid clutter above the gallery.
 
         LinearLayout tabs = row();
         filterTabs = new TextView[3];
@@ -368,13 +369,7 @@ public final class MainActivity extends Activity implements TelegramRepository.L
         addChip(actions,"▶ Feed",()->openFeed(false));
         addChip(actions,"⇄ Acak",()->openFeed(true));
         addChip(actions,"★ Favorit",()->setExtraFilter(3));
-        addChip(actions,"◷ Belum dilihat",()->setExtraFilter(4));
-        addChip(actions,"◫ Sampah",()->setExtraFilter(5));
-        addChip(actions,"◉ Tersembunyi",()->setExtraFilter(6));
-        addChip(actions,"◷ Riwayat",this::showHistory);
-        addChip(actions,"▣ Vault privat",()->startActivity(new Intent(this,PrivateMediaActivity.class)));
-        addChip(actions,"↓ Massal",this::downloadBatch);
-        addChip(actions,"↓ Antrean",this::downloadManager);
+        addChip(actions,"▣ Vault",()->startActivity(new Intent(this,PrivateMediaActivity.class)));
         shortcuts.addView(actions);
         page.addView(shortcuts);
 
@@ -471,7 +466,7 @@ public final class MainActivity extends Activity implements TelegramRepository.L
         String state = TelegramCacheBridge.start(this);
         if (!TelegramCacheBridge.connected()) {
             new AlertDialog.Builder(this).setTitle("Cache Telegram · Shizuku")
-                .setMessage(state + "\\n\\nShizuku harus berjalan dan VaultGram harus diberi izin. Tidak ada video yang disalin.")
+                .setMessage(state + "\n\nShizuku harus berjalan dan VaultGram harus diberi izin. Tidak ada video yang disalin.")
                 .setPositiveButton("OK", null).show();
             return;
         }
