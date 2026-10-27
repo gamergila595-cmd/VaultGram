@@ -34,12 +34,14 @@ final class TelegramCacheBridge {
             service = ITelegramCacheService.Stub.asInterface(binder);
             binding = false;
             bindError = "";
+            android.util.Log.i("VaultGramShizuku", "UserService connected: " + (binder != null));
         }
         @Override public void onServiceDisconnected(ComponentName name) {
             service = null;
             binding = false;
             matched.clear();
             bindError = "Layanan Shizuku terputus.";
+            android.util.Log.w("VaultGramShizuku", bindError);
         }
         @Override public void onBindingDied(ComponentName name) {
             service = null;
@@ -74,24 +76,27 @@ final class TelegramCacheBridge {
             } catch (Throwable e) { return "Permintaan izin Shizuku gagal: " + e.getMessage(); }
         }
         if (service != null) return "Telegram Cache Bridge sudah terhubung.";
-        if (binding && System.currentTimeMillis() - bindStartedAt < 12000)
+        if (binding && System.currentTimeMillis() - bindStartedAt < 35000)
             return "Menghubungkan layanan Shizuku...";
         if (binding) {
             binding = false;
-            bindError = "Timeout koneksi Shizuku (12 detik).";
+            bindError = "UserService belum siap dalam 35 detik; periksa log Shizuku.";
         }
         try {
+            android.util.Log.i("VaultGramShizuku", "Starting UserService bind; permission granted");
             binding = true;
             bindStartedAt = System.currentTimeMillis();
             Shizuku.UserServiceArgs args = new Shizuku.UserServiceArgs(
                     new ComponentName(activity, TelegramCacheService.class))
                     .processNameSuffix("telegram_cache")
                     .daemon(false)
-                    .version(1);
+                    .debuggable(true)
+                    .version(3);
             Shizuku.bindUserService(args, CONNECTION);
             return "Memulai jembatan cache. " + bindError + " Tunggu sebentar lalu coba lagi.";
         } catch (Throwable e) {
             binding = false;
+            android.util.Log.e("VaultGramShizuku", "bindUserService failed", e);
             return "Gagal menghubungkan Shizuku: " + e.getMessage();
         }
     }
