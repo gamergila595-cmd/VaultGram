@@ -10,7 +10,6 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
-import android.media.AudioManager;
 import android.media.MediaMetadataRetriever;
 import android.media.MediaPlayer;
 import android.media.PlaybackParams;
@@ -55,7 +54,6 @@ public final class PlayerActivity extends Activity implements TelegramRepository
     private LinearLayout top, bottom;
     private SeekBar timeline;
     private GestureDetector gestures;
-    private AudioManager audio;
     private MediaPlayer prepared;
     private int index = -1, playerWidth, playerHeight, fitMode, videoWidth, videoHeight;
     private int previewGeneration;
@@ -88,8 +86,14 @@ public final class PlayerActivity extends Activity implements TelegramRepository
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
+        if (getIntent().getBooleanExtra("feed_mode", false)) {
+            Intent directFeed = new Intent(this, VerticalFeedActivity.class);
+            directFeed.putExtra("message_id", getIntent().getLongExtra("message_id", 0));
+            startActivity(directFeed);
+            finish();
+            return;
+        }
         repo = TelegramRepository.get(getApplicationContext());
-        audio = (AudioManager) getSystemService(AUDIO_SERVICE);
         feedMode = getIntent().getBooleanExtra("feed_mode", false);
         queue.addAll(repo.playback());
         long messageId = getIntent().getLongExtra("message_id", 0);
@@ -341,66 +345,18 @@ public final class PlayerActivity extends Activity implements TelegramRepository
         video.setOnTouchListener(touch);
         currentPage.setOnTouchListener(touch);
     }
+    // Gallery videos now open VerticalFeedActivity. The full player keeps
+    // only tap/double-tap/hold controls; swipes do NOT adjust volume/brightness.
     private boolean handleTouch(MotionEvent e){
-        if(animating)return true;
         if(e.getActionMasked()==MotionEvent.ACTION_POINTER_DOWN && e.getPointerCount()>=3){
             video.pause();AppLock.lock(this);return true;
         }
         gestures.onTouchEvent(e);
-        switch(e.getActionMasked()){
-            case MotionEvent.ACTION_DOWN:
-                startX=e.getX();startY=e.getY();touchStartTime=SystemClock.elapsedRealtime();
-                dragging=false;dragDirection=0;pageOffset=0;return true;
-            case MotionEvent.ACTION_MOVE:
-                if(longSpeed)return true;
-                float dx=e.getX()-startX,dy=e.getY()-startY;
-                if(feedMode && Math.abs(dy)>dp(12)&&Math.abs(dy)>Math.abs(dx)*1.15f){
-                    int dir=dy<0?1:-1;
-                    if(index+dir<0||index+dir>=queue.size()){
-                        dragDirection=0;currentPage.setTranslationY(dy*.16f);return true;
-                    }
-                    dragging=true;
-                    if(dir!=dragDirection){dragDirection=dir;loadIncoming(dir);}
-                    pageOffset=dy;int height=pageHeight();
-                    currentPage.setTranslationY(dy);
-                    incomingPage.setTranslationY(dy+height*dir);
-                    return true;
-                }
-                if(!feedMode && Math.abs(dy)>dp(15)&&Math.abs(dy)>Math.abs(dx)){
-                    adjustBrightnessOrVolume(startX,dy);startY=e.getY();return true;
-                }
-                return true;
-            case MotionEvent.ACTION_UP:
-            case MotionEvent.ACTION_CANCEL:
-                if(longSpeed){longSpeed=false;speed=priorSpeed;applySpeed();}
-                if(feedMode && (dragging||currentPage.getTranslationY()!=0)){
-                    int dir=dragDirection;
-                    boolean commit=e.getActionMasked()==MotionEvent.ACTION_UP&&dir!=0&&
-                        (Math.abs(pageOffset)>pageHeight()*.18f ||
-                         (Math.abs(pageOffset)>dp(65)&&SystemClock.elapsedRealtime()-touchStartTime<220));
-                    animateSnap(commit?dir:0);
-                    dragging=false;return true;
-                }
-                if(!feedMode && e.getActionMasked()==MotionEvent.ACTION_UP){
-                    float horizontal=e.getX()-startX;
-                    if(Math.abs(horizontal)>dp(95)&&Math.abs(horizontal)>Math.abs(e.getY()-startY))
-                        seekBy(horizontal>0?10000:-10000);
-                }
-                return true;
+        if(longSpeed && (e.getActionMasked()==MotionEvent.ACTION_UP ||
+                e.getActionMasked()==MotionEvent.ACTION_CANCEL)){
+            longSpeed=false;speed=priorSpeed;applySpeed();
         }
         return true;
-    }
-    private void adjustBrightnessOrVolume(float downX,float movedY){
-        if(downX>stage.getWidth()/2f){
-            if(audio==null)return;
-            int n=audio.getStreamVolume(AudioManager.STREAM_MUSIC),max=audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
-            audio.setStreamVolume(AudioManager.STREAM_MUSIC,Math.max(0,Math.min(max,n+(movedY<0?1:-1))),0);
-        }else{
-            WindowManager.LayoutParams p=getWindow().getAttributes();
-            float bright=p.screenBrightness<0?0.5f:p.screenBrightness;
-            p.screenBrightness=Math.max(0.05f,Math.min(1f,bright+(movedY<0?.018f:-.018f)));
-            getWindow().setAttributes(p);
-        }
     }
     private int pageHeight(){return Math.max(1,stage.getHeight()>0?stage.getHeight():getResources().getDisplayMetrics().heightPixels);}
     private void loadIncoming(int dir){

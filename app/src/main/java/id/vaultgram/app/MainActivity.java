@@ -461,7 +461,7 @@ public final class MainActivity extends Activity implements TelegramRepository.L
     private void onVideoPressed(VideoEntry entry) {
         if (adapter == null) return;
         repo.setPlayback(adapter.displayed());
-        Intent intent = new Intent(this, PlayerActivity.class);
+        Intent intent = new Intent(this, VerticalFeedActivity.class);
         intent.putExtra("message_id", entry.messageId);
         startActivity(intent);
     }
@@ -583,7 +583,7 @@ public final class MainActivity extends Activity implements TelegramRepository.L
         LinearLayout box=column();box.setPadding(dp(8),dp(4),dp(8),dp(4));
         box.addView(v,new LinearLayout.LayoutParams(-1,dp(260)));
         AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Preview · "+e.title)
-            .setView(box).setPositiveButton("Putar penuh",(d,w)->onVideoPressed(e))
+            .setView(box).setPositiveButton("Putar di Feed",(d,w)->onVideoPressed(e))
             .setNegativeButton("Tutup",null).create();
         dialog.setOnDismissListener(d->v.stopPlayback());
         dialog.show();v.setVideoURI(uri);

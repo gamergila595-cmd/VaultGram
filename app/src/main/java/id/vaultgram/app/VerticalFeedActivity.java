@@ -586,6 +586,13 @@ public final class VerticalFeedActivity extends Activity implements TelegramRepo
             loading.setBackground(rounded(0xC9141824, 14));
             root.addView(loading, new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER));
 
+            // One transparent input surface: VideoView and thumbnail no longer
+            // compete for touch events. RecyclerView/ViewPager2 can intercept
+            // vertical drags to move the whole page, in both directions.
+            View swipeSurface = new View(VerticalFeedActivity.this);
+            swipeSurface.setClickable(true);
+            root.addView(swipeSurface, new FrameLayout.LayoutParams(-1, -1));
+
             LinearLayout footer = new LinearLayout(VerticalFeedActivity.this);
             footer.setOrientation(LinearLayout.VERTICAL);
             footer.setPadding(dp(18), dp(12), dp(18), dp(39));
@@ -644,12 +651,12 @@ public final class VerticalFeedActivity extends Activity implements TelegramRepo
                 if (motion.getActionMasked() == MotionEvent.ACTION_UP
                         || motion.getActionMasked() == MotionEvent.ACTION_CANCEL)
                     longSpeed(FeedHolder.this, false);
-                // Do not requestDisallowInterceptTouchEvent: ViewPager2 owns vertical drags.
+                // Never block ViewPager2's interception of vertical drags.
+                if (motion.getActionMasked() == MotionEvent.ACTION_DOWN)
+                    root.requestDisallowInterceptTouchEvent(false);
                 return true;
             };
-            player.setOnTouchListener(touch);
-            cover.setOnTouchListener(touch);
-            root.setOnTouchListener(touch);
+            swipeSurface.setOnTouchListener(touch);
         }
 
         void showStatus(String message) {
