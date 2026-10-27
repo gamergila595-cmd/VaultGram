@@ -293,15 +293,15 @@ public final class MainActivity extends Activity implements TelegramRepository.L
 
         LinearLayout source = row();
         source.setGravity(Gravity.CENTER_VERTICAL);
-        source.setPadding(dp(17), dp(17), dp(15), dp(17));
+        source.setPadding(dp(16), dp(12), dp(14), dp(12));
         source.setBackground(round(PANEL, 21));
         LinearLayout.LayoutParams srcLp = new LinearLayout.LayoutParams(-1, -2);
-        srcLp.topMargin = dp(24);
+        srcLp.topMargin = dp(12);
         page.addView(source, srcLp);
         LinearLayout left = column();
         source.addView(left, new LinearLayout.LayoutParams(0, -2, 1));
-        left.addView(label("SUMBER VIDEO", 11, ACCENT, true));
-        botText = label(repo.bot().isEmpty() ? "Pilih bot Telegram" : "@" + repo.bot(), 19, TEXT, true);
+        left.addView(label("BOT TERHUBUNG", 10, ACCENT, true));
+        botText = label(repo.bot().isEmpty() ? "Pilih bot Telegram" : "@" + repo.bot(), 16, TEXT, true);
         botText.setSingleLine(true);
         botText.setEllipsize(TextUtils.TruncateAt.END);
         LinearLayout.LayoutParams botLp = new LinearLayout.LayoutParams(-1, -2);
@@ -317,10 +317,10 @@ public final class MainActivity extends Activity implements TelegramRepository.L
 
         LinearLayout autoRow = row();
         autoRow.setGravity(Gravity.CENTER_VERTICAL);
-        autoRow.setPadding(dp(13), dp(11), dp(13), dp(11));
+        autoRow.setPadding(dp(13), dp(8), dp(13), dp(8));
         autoRow.setBackground(round(PANEL, 14));
         LinearLayout.LayoutParams autoLp = new LinearLayout.LayoutParams(-1, -2);
-        autoLp.topMargin = dp(11);
+        autoLp.topMargin = dp(7);
         page.addView(autoRow, autoLp);
         TextView description = label("Auto-download video baru", 12, TEXT, true);
         autoRow.addView(description, new LinearLayout.LayoutParams(0, -2, 1));
@@ -383,7 +383,7 @@ public final class MainActivity extends Activity implements TelegramRepository.L
         search.setCompoundDrawablePadding(dp(9));
         LinearLayout.LayoutParams searchLp = new LinearLayout.LayoutParams(-1, dp(47));
         searchLp.topMargin = dp(15);
-        searchLp.bottomMargin = dp(9);
+        searchLp.bottomMargin = dp(5);
         page.addView(search, searchLp);
         search.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int a, int c, int d) {}
@@ -395,7 +395,7 @@ public final class MainActivity extends Activity implements TelegramRepository.L
 
         GridView grid = new GridView(this);
         grid.setNumColumns(2);
-        grid.setVerticalSpacing(dp(14));
+        grid.setVerticalSpacing(dp(11));
         grid.setHorizontalSpacing(dp(12));
         grid.setStretchMode(GridView.STRETCH_COLUMN_WIDTH);
         grid.setClipToPadding(false);
