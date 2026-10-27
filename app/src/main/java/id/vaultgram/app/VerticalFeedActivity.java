@@ -291,6 +291,7 @@ public final class VerticalFeedActivity extends Activity implements TelegramRepo
         if (active != holder || !resumed || pagerState != ViewPager2.SCROLL_STATE_IDLE) return;
         VideoEntry item = queue.get(selected);
         Uri uri = item.playableUri();
+        if (uri == null) uri = TelegramCacheBridge.uri(item);
         if (uri == null) {
             holder.showStatus(item.downloading() || item.progress() > 0
                     ? "Mengunduh video... " + item.progress() + "%"
