@@ -6,5 +6,5 @@ import android.os.ParcelFileDescriptor;
 interface ITelegramCacheService {
     String[] listVideoFiles(int offset, int count);
     ParcelFileDescriptor openVideo(String path);
-    void destroy() = 16777114;
+    void destroy();
 }
