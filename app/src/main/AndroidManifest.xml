@@ -6,6 +6,7 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
     <application
         android:name=".AppLock"
         android:allowBackup="false"
@@ -13,6 +14,14 @@
         android:icon="@drawable/ic_launcher"
         android:usesCleartextTraffic="false"
         android:theme="@style/AppTheme">
+        <provider android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:multiprocess="false"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+        <provider android:name=".TelegramCacheProvider"
+            android:authorities="id.vaultgram.app.telegram_cache"
+            android:exported="false" />
         <activity android:name=".LockActivity" android:exported="false" android:screenOrientation="portrait" />
         <provider
             android:name=".VaultShareProvider"
