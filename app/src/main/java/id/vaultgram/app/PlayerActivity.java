@@ -113,26 +113,26 @@ public final class PlayerActivity extends Activity implements TelegramRepository
         nextButton.setGravity(Gravity.CENTER);
         controls.addView(nextButton, new LinearLayout.LayoutParams(0, dp(50), 1));
         nextButton.setOnClickListener(v -> showItem(index + 1));
-        LinearLayout extra=new LinearLayout(this);
-        extra.setGravity(Gravity.CENTER);
-        extra.setBackgroundColor(0xAB000000);
+        LinearLayout quickControls=new LinearLayout(this);
+        quickControls.setGravity(Gravity.CENTER);
+        quickControls.setBackgroundColor(0xAB000000);
         TextView rewind=label("−10 s",13,Color.WHITE);
         rewind.setGravity(Gravity.CENTER);
         rewind.setOnClickListener(v -> seekBy(-10000));
-        extra.addView(rewind,new LinearLayout.LayoutParams(0,dp(42),1));
+        quickControls.addView(rewind,new LinearLayout.LayoutParams(0,dp(42),1));
         TextView speedButton=label("1×",13,Color.WHITE);
         speedButton.setGravity(Gravity.CENTER);
         speedButton.setOnClickListener(v->{
             speed=speed==1f?1.25f:speed==1.25f?1.5f:speed==1.5f?2f:1f;
             speedButton.setText(speed+"×");applySpeed();
         });
-        extra.addView(speedButton,new LinearLayout.LayoutParams(0,dp(42),1));
+        quickControls.addView(speedButton,new LinearLayout.LayoutParams(0,dp(42),1));
         TextView forward=label("+10 s",13,Color.WHITE);
         forward.setGravity(Gravity.CENTER);
         forward.setOnClickListener(v -> seekBy(10000));
-        extra.addView(forward,new LinearLayout.LayoutParams(0,dp(42),1));
+        quickControls.addView(forward,new LinearLayout.LayoutParams(0,dp(42),1));
         LinearLayout bottom=new LinearLayout(this);bottom.setOrientation(LinearLayout.VERTICAL);
-        bottom.addView(extra);bottom.addView(controls);
+        bottom.addView(quickControls);bottom.addView(controls);
         root.addView(bottom,new FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM));
         setContentView(root);
 
