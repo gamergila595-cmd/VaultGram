@@ -369,6 +369,9 @@ public final class MainActivity extends Activity implements TelegramRepository.L
         addChip(actions,"★ Favorit",()->setExtraFilter(3));
         addChip(actions,"◷ Belum dilihat",()->setExtraFilter(4));
         addChip(actions,"◫ Sampah",()->setExtraFilter(5));
+        addChip(actions,"◉ Tersembunyi",()->setExtraFilter(6));
+        addChip(actions,"◷ Riwayat",this::showHistory);
+        addChip(actions,"▣ Vault privat",()->startActivity(new Intent(this,PrivateMediaActivity.class)));
         addChip(actions,"↓ Massal",this::downloadBatch);
         addChip(actions,"↓ Antrean",this::downloadManager);
         shortcuts.addView(actions);
@@ -540,7 +543,7 @@ public final class MainActivity extends Activity implements TelegramRepository.L
     }
     private void setExtraFilter(int f){
         filter=f;updateTabs();refreshGrid();
-        Toast.makeText(this,f==3?"Filter favorit":f==4?"Filter belum dilihat":"Sampah (7 hari)",Toast.LENGTH_SHORT).show();
+        Toast.makeText(this,f==3?"Filter favorit":f==4?"Filter belum dilihat":f==5?"Sampah (7 hari)":"Video tersembunyi",Toast.LENGTH_SHORT).show();
     }
     private void openFeed(boolean random){
         if(adapter==null || adapter.getCount()==0){showFailure("Belum ada video untuk diputar");return;}
@@ -551,6 +554,24 @@ public final class MainActivity extends Activity implements TelegramRepository.L
         intent.putExtra("message_id",play.get(0).messageId);
         intent.putExtra("feed_mode",true);
         startActivity(intent);
+    }
+    private void showHistory(){
+        List<VideoEntry> history=new ArrayList<>();
+        for(VideoEntry v:repo.snapshot())if(ViewerExtras.viewedAt(this,repo.chat(),v.messageId)>0)
+            history.add(v);
+        history.sort((a,b)->Long.compare(ViewerExtras.viewedAt(this,repo.chat(),b.messageId),
+            ViewerExtras.viewedAt(this,repo.chat(),a.messageId)));
+        if(history.isEmpty()) {showFailure("Belum ada riwayat menonton");return;}
+        int count=Math.min(100,history.size());String[] choices=new String[count];
+        for(int i=0;i<count;i++)choices[i]=history.get(i).title;
+        new AlertDialog.Builder(this).setTitle("Riwayat video ("+history.size()+")")
+            .setItems(choices,(d,w)->onVideoPressed(history.get(w)))
+            .setNeutralButton("Hapus riwayat",(d,w)->new AlertDialog.Builder(this)
+                .setTitle("Hapus riwayat menonton?")
+                .setNegativeButton("Batal",null)
+                .setPositiveButton("Hapus",(dialog,which)->ViewerExtras.clearHistory(this,repo.chat(),repo.snapshot()))
+                .show())
+            .setNegativeButton("Tutup",null).show();
     }
     private void showPreview(VideoEntry e){
         Uri uri=e.playableUri();
@@ -575,7 +596,9 @@ public final class MainActivity extends Activity implements TelegramRepository.L
         String[] choices={"Preview 8 detik","Detail video",e.favorite?"Hapus favorit":"Tambahkan favorit",
             e.watched?"Tandai belum dilihat":"Tandai sudah dilihat",
             e.trashedAt>0?"Pulihkan dari sampah":"Pindahkan ke sampah",
-            "Unduh / Lanjutkan","Jeda download","Simpan ke Downloads HP"};
+            "Unduh / Lanjutkan","Jeda download","Simpan ke Downloads HP",
+            ViewerExtras.hidden(this,repo.chat(),e.messageId)?"Tampilkan dari tersembunyi":"Sembunyikan dari galeri",
+            "Bagikan video sementara"};
         new AlertDialog.Builder(this).setTitle(e.title).setItems(choices,(d,which)->{
             switch(which){
                 case 0:showPreview(e);break;
@@ -587,6 +610,10 @@ public final class MainActivity extends Activity implements TelegramRepository.L
                 case 6:repo.pauseDownload(e);break;
                 case 7:if(!e.localPath().isEmpty())saveToPhone(e);
                     else showFailure("Video belum tersimpan di cache aplikasi.");break;
+                case 8:ViewerExtras.setHidden(this,repo.chat(),e.messageId,
+                    !ViewerExtras.hidden(this,repo.chat(),e.messageId));refreshGrid();break;
+                case 9:if(e.playableUri()!=null)VaultShareProvider.share(this,e.playableUri(),"video/*");
+                    else showFailure("Video harus tersedia secara lokal sebelum dibagikan");break;
             }
         }).show();
     }
@@ -659,7 +686,9 @@ public final class MainActivity extends Activity implements TelegramRepository.L
             "Download hanya malam (23–06): "+(repo.nightOnly()?"Aktif":"Mati"),
             "Hanya saat dicas: "+(repo.chargingOnly()?"Aktif":"Mati"),
             "Penyimpanan & batas cache","Backup ringan (terenkripsi)","Backup lengkap + video","Pulihkan backup",
-            "Status jaringan & sinkronisasi"};
+            "Status jaringan & sinkronisasi",
+            "Hemat data (preload): "+(ViewerExtras.dataSaver(this)?"Aktif":"Mati"),
+            "Lihat Vault privat & potret"};
         new AlertDialog.Builder(this).setTitle("Pengaturan VaultGram")
             .setItems(choices,(d,w)->{
                 switch(w){
@@ -680,6 +709,8 @@ public final class MainActivity extends Activity implements TelegramRepository.L
                     case 14:chooseRestore();break;
                     case 15:new AlertDialog.Builder(this).setTitle("Monitor Telegram").setMessage(repo.monitor())
                         .setPositiveButton("Tutup",null).show();break;
+                    case 16:ViewerExtras.setDataSaver(this,!ViewerExtras.dataSaver(this));break;
+                    case 17:startActivity(new Intent(this,PrivateMediaActivity.class));break;
                 }
             }).setNegativeButton("Tutup",null).show();
     }
@@ -736,8 +767,11 @@ public final class MainActivity extends Activity implements TelegramRepository.L
             shown.clear();
             String q = text.trim().toLowerCase(Locale.ROOT);
             for (VideoEntry v : originals) {
+                boolean hidden=ViewerExtras.hidden(MainActivity.this,repo.chat(),v.messageId);
+                if (filter == 6 && !hidden) continue;
+                if (filter != 6 && hidden) continue;
                 if (filter == 5 && v.trashedAt == 0) continue;
-                if (filter != 5 && v.trashedAt != 0) continue;
+                if (filter != 5 && filter != 6 && v.trashedAt != 0) continue;
                 if (filter == 1 && !v.complete()) continue;
                 if (filter == 2 && v.complete()) continue;
                 if (filter == 3 && !v.favorite) continue;

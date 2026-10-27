@@ -633,6 +633,16 @@ final class TelegramRepository {
     }
     boolean autoWifiEnabled() { return !"off".equals(prefs.get("auto_wifi")); }
     boolean wifiAvailable() { return wifi; }
+    private final Set<Integer> segmentsPrefetched = new HashSet<>();
+    // Preload only an initial segment; never prefetch an entire video on cellular.
+    void prefetchNeighbor(VideoEntry candidate) {
+        if (!wifi || client == null || candidate == null || candidate.complete() ||
+            candidate.downloading() || manuallyRequested.contains(candidate.fileId)) return;
+        if (!segmentsPrefetched.add(candidate.fileId)) return;
+        client.send(new TdApi.DownloadFile(candidate.fileId, 1, 0, 262144, false), result -> {
+            if (result instanceof TdApi.File) main.post(() -> onFileUpdate((TdApi.File) result));
+        });
+    }
     void setAutoWifiEnabled(boolean enable) {
         prefs.put("auto_wifi", enable ? "on" : "off");
         if (!enable) cancelAutoTransfers();
@@ -650,7 +660,14 @@ final class TelegramRepository {
         boolean now = activeWifi();
         if (wifi == now) return;
         wifi = now;
-        if (!wifi) cancelAutoTransfers();
+        if (!wifi) {
+            for (Integer fileId : new HashSet<>(segmentsPrefetched)) {
+                if (!manuallyRequested.contains(fileId) && !autoActiveFiles.contains(fileId))
+                    client.send(new TdApi.CancelDownloadFile(fileId, false), this::checkError);
+            }
+            segmentsPrefetched.clear();
+            cancelAutoTransfers();
+        }
         else pumpAuto();
         notifyVideos();
     }

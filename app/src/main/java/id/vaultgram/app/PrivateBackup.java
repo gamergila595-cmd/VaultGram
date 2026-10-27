@@ -71,6 +71,11 @@ final class PrivateBackup {
                         v.put("date",e.date);v.put("name",e.title);v.put("duration",e.duration);
                         v.put("size",e.size());v.put("favorite",e.favorite);
                         v.put("watched",e.watched);v.put("position",e.positionMs);v.put("trashed",e.trashedAt);
+                        v.put("hidden",ViewerExtras.hidden(a,chat,e.messageId));
+                        v.put("history",ViewerExtras.viewedAt(a,chat,e.messageId));
+                        JSONArray marks=new JSONArray();
+                        for(int t:ViewerExtras.bookmarks(a,chat,e.messageId))marks.put(t);
+                        v.put("bookmarks",marks);
                         if(e.preview!=null && e.preview.length<65536)
                             v.put("preview",Base64.encodeToString(e.preview,Base64.NO_WRAP));
                         if(withVideos && e.complete() && ids.add(e.fileId)){
@@ -90,6 +95,18 @@ final class PrivateBackup {
                                 zip.putNextEntry(new ZipEntry("videos/"+e.fileId+".bin"));
                                 copy(in,zip);zip.closeEntry();copied++;
                             }catch(Exception ignored){ /* One inaccessible file must not destroy the catalog backup. */ }
+                        }
+                        for(File file:ViewerExtras.files(ViewerExtras.captures(a))) {
+                            if(!file.getName().matches("[A-Za-z0-9._ -]{1,120}"))continue;
+                            zip.putNextEntry(new ZipEntry("private/captures/"+file.getName()));
+                            try(InputStream in=new FileInputStream(file)){copy(in,zip);}
+                            zip.closeEntry();copied++;
+                        }
+                        for(File file:ViewerExtras.files(ViewerExtras.imports(a))) {
+                            if(!file.getName().matches("[A-Za-z0-9._ -]{1,120}"))continue;
+                            zip.putNextEntry(new ZipEntry("private/imports/"+file.getName()));
+                            try(InputStream in=new FileInputStream(file)){copy(in,zip);}
+                            zip.closeEntry();copied++;
                         }
                     }
                 }
@@ -127,6 +144,14 @@ final class PrivateBackup {
                                 buf.write(block,0,n);
                             }
                             json=new JSONObject(buf.toString("UTF-8"));
+                        }else if(name.startsWith("private/captures/") || name.startsWith("private/imports/")) {
+                            boolean capture=name.startsWith("private/captures/");
+                            String basename=name.substring(capture?17:16);
+                            if(!basename.matches("[A-Za-z0-9._ -]{1,120}"))
+                                throw new IllegalArgumentException("Nama file backup tidak valid");
+                            File dir=capture?ViewerExtras.captures(a):ViewerExtras.imports(a);
+                            File dest=new File(dir,basename);
+                            try(FileOutputStream out=new FileOutputStream(dest)){copy(zip,out);}
                         }else if(name.matches("videos/[0-9]+\\.bin")){
                             int id=Integer.parseInt(name.substring(7,name.length()-4));
                             File dest=new File(privateFolder,id+".bin");
@@ -143,6 +168,9 @@ final class PrivateBackup {
                 long chat=Long.parseLong(json.getString("chat"));String bot=json.getString("bot");
                 JSONArray list=json.getJSONArray("videos");
                 ArrayList<VideoEntry> imported=new ArrayList<>();
+                ArrayList<Long> hiddenIds=new ArrayList<>();
+                Map<Long,Long> viewTimes=new HashMap<>();
+                Map<Long,List<Integer>> bookmarkTimes=new HashMap<>();
                 for(int i=0;i<list.length();i++){
                     JSONObject v=list.getJSONObject(i);
                     int fid=v.getInt("file");File f=videoFiles.get(fid);
@@ -153,9 +181,23 @@ final class PrivateBackup {
                     e.favorite=v.optBoolean("favorite");e.watched=v.optBoolean("watched");
                     e.positionMs=v.optInt("position");e.trashedAt=v.optLong("trashed");
                     imported.add(e);
+                    if(v.optBoolean("hidden",false))hiddenIds.add(e.messageId);
+                    long viewed=v.optLong("history",0);
+                    if(viewed>0)viewTimes.put(e.messageId,viewed);
+                    JSONArray savedMarks=v.optJSONArray("bookmarks");
+                    if(savedMarks!=null){
+                        ArrayList<Integer> times=new ArrayList<>();
+                        for(int j=0;j<savedMarks.length() && j<300;j++)times.add(Math.max(0,savedMarks.optInt(j)));
+                        bookmarkTimes.put(e.messageId,times);
+                    }
                 }
                 a.runOnUiThread(()->{
                     try{repo.importCatalog(chat,bot,account,imported);
+                        for(long id:hiddenIds)ViewerExtras.setHidden(a,chat,id,true);
+                        for(Map.Entry<Long,Long> entry:viewTimes.entrySet())
+                            ViewerExtras.setViewedAt(a,chat,entry.getKey(),entry.getValue());
+                        for(Map.Entry<Long,List<Integer>> entry:bookmarkTimes.entrySet())
+                            ViewerExtras.setBookmarks(a,chat,entry.getKey(),entry.getValue());
                         cb.done("Pulih "+imported.size()+" video (file lokal: "+videoFiles.size()+").",true);
                     }catch(Exception e){cb.done("Pemulihan gagal: "+e.getMessage(),false);}
                 });
