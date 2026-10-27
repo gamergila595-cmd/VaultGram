@@ -22,7 +22,9 @@ public final class TelegramCacheService extends ITelegramCacheService.Stub {
     private final List<File> files = new ArrayList<>();
     private long indexedAt;
 
-    public TelegramCacheService() {}
+    public TelegramCacheService() {
+        android.util.Log.i("VaultGramCacheService", "UserService constructor entered");
+    }
 
     private boolean isVideo(File f) {
         if (!f.isFile() || f.length() <= 0) return false;
