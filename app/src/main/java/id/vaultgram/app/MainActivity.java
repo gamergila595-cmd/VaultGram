@@ -364,6 +364,7 @@ public final class MainActivity extends Activity implements TelegramRepository.L
         shortcuts.setHorizontalScrollBarEnabled(false);
         LinearLayout actions = row();
         actions.setPadding(0,dp(12),0,dp(2));
+        addChip(actions,"Cache Telegram",this::openTelegramCache);
         addChip(actions,"▶ Feed",()->openFeed(false));
         addChip(actions,"⇄ Acak",()->openFeed(true));
         addChip(actions,"★ Favorit",()->setExtraFilter(3));
@@ -464,6 +465,26 @@ public final class MainActivity extends Activity implements TelegramRepository.L
         Intent intent = new Intent(this, VerticalFeedActivity.class);
         intent.putExtra("message_id", entry.messageId);
         startActivity(intent);
+    }
+
+    private void openTelegramCache() {
+        String state = TelegramCacheBridge.start(this);
+        if (!TelegramCacheBridge.connected()) {
+            new AlertDialog.Builder(this).setTitle("Cache Telegram · Shizuku")
+                .setMessage(state + "\\n\\nShizuku harus berjalan dan VaultGram harus diberi izin. Tidak ada video yang disalin.")
+                .setPositiveButton("OK", null).show();
+            return;
+        }
+        List<VideoEntry> videos = repo.snapshot();
+        Toast.makeText(this, "Memindai video Telegram tanpa menyalin...", Toast.LENGTH_LONG).show();
+        TelegramCacheBridge.scan(this, videos, () -> {
+            refreshGrid();
+            new AlertDialog.Builder(this).setTitle("Cache Telegram")
+                .setMessage("Video terindeks: " + TelegramCacheBridge.count() +
+                        "\\nKandidat cocok ukuran unik: " + TelegramCacheBridge.matches() +
+                        "\\n\\nPencocokan ini masih beta. Ukuran file sama belum menjamin isi video identik.")
+                .setPositiveButton("OK", null).show();
+        });
     }
 
     private void scanDownloads() {
