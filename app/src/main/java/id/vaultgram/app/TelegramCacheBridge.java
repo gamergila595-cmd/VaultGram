@@ -90,8 +90,8 @@ final class TelegramCacheBridge {
                     new ComponentName(activity, TelegramCacheService.class))
                     .processNameSuffix("telegram_cache")
                     .daemon(false)
-                    .debuggable(true)
-                    .version(3);
+                    .debuggable(false)
+                    .version(4);
             Shizuku.bindUserService(args, CONNECTION);
             return "Memulai jembatan cache. " + bindError + " Tunggu sebentar lalu coba lagi.";
         } catch (Throwable e) {
