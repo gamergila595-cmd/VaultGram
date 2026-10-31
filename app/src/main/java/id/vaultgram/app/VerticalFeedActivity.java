@@ -607,9 +607,9 @@ public final class VerticalFeedActivity extends Activity implements TelegramRepo
         String playingUri = "";
         boolean longSpeed;
         boolean tracking;
-        final Runnable hidePlayIndicator = () -> {
-            if (prepared != null && player.isPlaying()) playIndicator.setVisibility(View.GONE);
-        };
+        final Runnable hidePlayIndicator;
+
+
 
         FeedHolder(FrameLayout page) {
             super(page);
@@ -639,6 +639,9 @@ public final class VerticalFeedActivity extends Activity implements TelegramRepo
             playIndicator.setBackground(rounded(0xB9000000, 50));
             playIndicator.setVisibility(View.GONE);
             root.addView(playIndicator, new FrameLayout.LayoutParams(dp(76), dp(76), Gravity.CENTER));
+            hidePlayIndicator = () -> {
+                if (prepared != null && player.isPlaying()) playIndicator.setVisibility(View.GONE);
+            };
 
             speedBadge = chip("2×", 17);
             speedBadge.setVisibility(View.GONE);
