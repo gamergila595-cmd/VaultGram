@@ -292,18 +292,16 @@ public final class PlayerActivity extends Activity implements TelegramRepository
     private void preloadNeighbors(){
         if(index>0)repo.requestThumbnail(queue.get(index-1));
         if(index+1<queue.size())repo.requestThumbnail(queue.get(index+1));
-        if(repo.wifiAvailable() && !ViewerExtras.dataSaver(this)){
-            if(index+1<queue.size())repo.prefetchNeighbor(queue.get(index+1));
-        }
+        // Feed/player must not prefetch video bytes without user consent.
     }
     private void updatePlayback(){
         if(index<0||index>=queue.size())return;
         VideoEntry item=queue.get(index);Uri uri=item.playableUri();
+        if(uri==null)uri=TelegramCacheBridge.uri(item);
         if(uri==null){
             status.setText(item.downloading()||item.progress()>0?
-                "Mengunduh video " + item.progress()+"%":"Mengunduh video sebelum diputar...");
+                "Unduhan manual " + item.progress()+"%":"Video tidak ada di cache. Menu ⋮ untuk mengunduh.");
             status.setVisibility(View.VISIBLE);
-            if(requestedId!=item.messageId){requestedId=item.messageId;repo.download(item);}
             return;
         }
         if(uri.toString().equals(playingUri))return;
@@ -398,7 +396,9 @@ public final class PlayerActivity extends Activity implements TelegramRepository
     private void seekFrame(int wanted){
         if(index<0||index>=queue.size() || SystemClock.elapsedRealtime()-lastFrameTime<320)return;
         lastFrameTime=SystemClock.elapsedRealtime();
-        Uri uri=queue.get(index).playableUri();if(uri==null)return;
+        Uri cachedUri=queue.get(index).playableUri();
+        final Uri uri=cachedUri!=null?cachedUri:TelegramCacheBridge.uri(queue.get(index));
+        if(uri==null)return;
         int token=++previewGeneration;
         frames.execute(()->{
             Bitmap thumb=null;MediaMetadataRetriever retriever=new MediaMetadataRetriever();
@@ -415,7 +415,8 @@ public final class PlayerActivity extends Activity implements TelegramRepository
     }
     private void captureFrame(){
         if(index<0||index>=queue.size())return;
-        VideoEntry item=queue.get(index);Uri uri=item.playableUri();
+        VideoEntry item=queue.get(index);Uri cachedUri=item.playableUri();
+        final Uri uri=cachedUri!=null?cachedUri:TelegramCacheBridge.uri(item);
         if(uri==null){Toast.makeText(this,"Video belum tersedia offline",Toast.LENGTH_SHORT).show();return;}
         int ms=video.getCurrentPosition();
         frames.execute(()->{
@@ -467,7 +468,7 @@ public final class PlayerActivity extends Activity implements TelegramRepository
         new AlertDialog.Builder(this).setTitle("Aksi Video")
             .setItems(new String[]{"Bookmark detik video","Ulang bagian A-B","Sleep timer",
                 "Simpan potret ke Vault privat","Lihat potret & file pribadi",
-                "Sembunyikan video dari galeri","Kunci darurat","Hemat data: "+(ViewerExtras.dataSaver(this)?"Aktif":"Mati")},(d,which)->{
+                "Sembunyikan video dari galeri","Kunci darurat","Hemat data: "+(ViewerExtras.dataSaver(this)?"Aktif":"Mati"),"Unduh video (pakai internet)"},(d,which)->{
                 switch(which){
                     case 0:bookmarkMenu();break;
                     case 1:loopMenu();break;
@@ -478,6 +479,12 @@ public final class PlayerActivity extends Activity implements TelegramRepository
                         Toast.makeText(this,"Video disembunyikan dari galeri utama",Toast.LENGTH_SHORT).show();break;
                     case 6:video.pause();AppLock.lock(this);break;
                     case 7:ViewerExtras.setDataSaver(this,!ViewerExtras.dataSaver(this));break;
+                    case 8:new AlertDialog.Builder(this)
+                        .setTitle("Unduh video dari Telegram?")
+                        .setMessage("Menggunakan internet dan mungkin kuota seluler.")
+                        .setNegativeButton("Batal",null)
+                        .setPositiveButton("Unduh",(dialog,choice)->repo.download(item))
+                        .show();break;
                 }
             }).show();
     }
