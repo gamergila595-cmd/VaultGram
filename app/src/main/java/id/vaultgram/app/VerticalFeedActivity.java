@@ -239,7 +239,7 @@ public final class VerticalFeedActivity extends Activity implements TelegramRepo
         new AlertDialog.Builder(this).setTitle("Aksi video")
                 .setItems(new String[] {
                     "Buka pemutar lengkap", favorite, fill ? "Tampilan asli" : "Penuhi layar",
-                    "Kunci VaultGram"
+                    "Unduh video ini (memakai internet)", "Kunci VaultGram"
                 }, (dialog, which) -> {
                     switch (which) {
                         case 0:
@@ -254,7 +254,19 @@ public final class VerticalFeedActivity extends Activity implements TelegramRepo
                                     : "Dihapus dari favorit", Toast.LENGTH_SHORT).show();
                             break;
                         case 2: toggleAspect(); break;
-                        case 3: AppLock.lock(this); break;
+                        case 3:
+                            new AlertDialog.Builder(this)
+                                    .setTitle("Unduh menggunakan internet?")
+                                    .setMessage("VaultGram akan mengunduh video ini dari Telegram. Bisa menghabiskan kuota seluler.")
+                                    .setNegativeButton("Batal", null)
+                                    .setPositiveButton("Unduh", (d, w) -> {
+                                        requested.add(entry.messageId);
+                                        repo.download(entry);
+                                        FeedHolder holder = at(selected);
+                                        if (holder != null) holder.showStatus("Mengunduh atas permintaan...");
+                                    }).show();
+                            break;
+                        case 4: AppLock.lock(this); break;
                     }
                 }).show();
     }
@@ -279,8 +291,8 @@ public final class VerticalFeedActivity extends Activity implements TelegramRepo
             repo.requestThumbnail(entry);
             if (selected + 1 < queue.size()) {
                 repo.requestThumbnail(queue.get(selected + 1));
-                if (repo.wifiAvailable() && !ViewerExtras.dataSaver(this))
-                    repo.prefetchNeighbor(queue.get(selected + 1));
+                // Feed never downloads the next video in the background.
+                // It can still use already cached bytes through Shizuku.
             }
             if (selected > 0) repo.requestThumbnail(queue.get(selected - 1));
         }
@@ -293,16 +305,18 @@ public final class VerticalFeedActivity extends Activity implements TelegramRepo
         Uri uri = item.playableUri();
         if (uri == null) uri = TelegramCacheBridge.uri(item);
         if (uri == null) {
+            holder.resetPlaybackUi();
             holder.showStatus(item.downloading() || item.progress() > 0
-                    ? "Mengunduh video... " + item.progress() + "%"
-                    : "Menyiapkan video untuk diputar...");
-            if (requested.add(item.messageId)) repo.download(item);
+                    ? "Unduhan manual: " + item.progress() + "%"
+                    : "Video belum ada di cache. Menu ⋮ untuk mengunduh.");
             return;
         }
         String target = uri.toString();
         if (target.equals(holder.playingUri)) {
-            if (!userPaused && !holder.player.isPlaying() && holder.prepared != null)
+            if (!userPaused && !holder.player.isPlaying() && holder.prepared != null) {
                 holder.player.start();
+                holder.showPlayback(true);
+            }
             return;
         }
         holder.playingUri = target;
@@ -325,7 +339,12 @@ public final class VerticalFeedActivity extends Activity implements TelegramRepo
             int duration = holder.player.getDuration();
             if (item.positionMs > 3000 && (duration <= 0 || item.positionMs < duration - 3000))
                 holder.player.seekTo(item.positionMs);
-            if (!userPaused) holder.player.start();
+            if (!userPaused) {
+                holder.player.start();
+                holder.showPlayback(true);
+            } else {
+                holder.showPlayback(false);
+            }
         });
         holder.player.setOnCompletionListener(mp -> {
             if (active != holder || selected != holder.boundIndex) return;
@@ -334,11 +353,14 @@ public final class VerticalFeedActivity extends Activity implements TelegramRepo
             else {
                 holder.showStatus("Semua video selesai");
                 userPaused = true;
+                holder.showPlayback(false);
             }
         });
         holder.player.setOnErrorListener((mp, what, extra) -> {
-            if (holder == active) holder.showStatus(
-                    "Format video tidak didukung. Buka pemutar lengkap untuk opsi lain.");
+            if (holder == active) {
+                holder.resetPlaybackUi();
+                holder.showStatus("Format video tidak didukung. Buka pemutar lengkap untuk opsi lain.");
+            }
             return true;
         });
         holder.player.requestFocus();
@@ -377,6 +399,7 @@ public final class VerticalFeedActivity extends Activity implements TelegramRepo
         active.prepared = null;
         active.playingUri = "";
         active.longSpeed = false;
+        active.resetPlaybackUi();
         active = null;
     }
 
@@ -387,6 +410,7 @@ public final class VerticalFeedActivity extends Activity implements TelegramRepo
             holder.player.pause();
             savePosition(holder);
         } else holder.player.start();
+        holder.showPlayback(!userPaused);
     }
     private void seek(FeedHolder holder, int by) {
         if (holder != active || holder.prepared == null) return;
@@ -398,10 +422,17 @@ public final class VerticalFeedActivity extends Activity implements TelegramRepo
     private void longSpeed(FeedHolder holder, boolean enable) {
         if (holder != active || holder.prepared == null || holder.longSpeed == enable) return;
         holder.longSpeed = enable;
+        // A paused player must not be restarted by setPlaybackParams().
+        if (!holder.player.isPlaying()) {
+            holder.speedBadge.setVisibility(View.GONE);
+            return;
+        }
         try {
             holder.prepared.setPlaybackParams(new PlaybackParams().setSpeed(enable ? 2f : 1f));
+            holder.speedBadge.setVisibility(enable ? View.VISIBLE : View.GONE);
         } catch (RuntimeException ignored) {
             holder.longSpeed = false;
+            holder.speedBadge.setVisibility(View.GONE);
         }
     }
 
@@ -467,8 +498,8 @@ public final class VerticalFeedActivity extends Activity implements TelegramRepo
         resumed = false;
         if (active != null) {
             savePosition(active);
-            active.player.pause();
             longSpeed(active, false);
+            active.player.pause();
         }
         repo.unbind(this);
         super.onPause();
@@ -528,11 +559,12 @@ public final class VerticalFeedActivity extends Activity implements TelegramRepo
             holder.videoWidth = 0;
             holder.videoHeight = 0;
             holder.longSpeed = false;
+            holder.resetPlaybackUi();
             holder.caption.setText(queue.get(position).title);
             holder.time.setText("00:00 / " + queue.get(position).durationLabel());
             holder.cover.setScaleType(fill ? ImageView.ScaleType.CENTER_CROP
                                            : ImageView.ScaleType.FIT_CENTER);
-            holder.showStatus("Geser ke atas untuk video berikutnya");
+            holder.showStatus("Menyiapkan video...");
             loadPreview(holder);
         }
 
@@ -562,6 +594,10 @@ public final class VerticalFeedActivity extends Activity implements TelegramRepo
         final TextView caption;
         final TextView loading;
         final TextView time;
+        final TextView hint;
+        final TextView playIndicator;
+        final TextView speedBadge;
+        final LinearLayout footer;
         final SeekBar timeline;
         final GestureDetector gestures;
         MediaPlayer prepared;
@@ -571,6 +607,9 @@ public final class VerticalFeedActivity extends Activity implements TelegramRepo
         String playingUri = "";
         boolean longSpeed;
         boolean tracking;
+        final Runnable hidePlayIndicator = () -> {
+            if (prepared != null && player.isPlaying()) playIndicator.setVisibility(View.GONE);
+        };
 
         FeedHolder(FrameLayout page) {
             super(page);
@@ -594,17 +633,32 @@ public final class VerticalFeedActivity extends Activity implements TelegramRepo
             swipeSurface.setClickable(true);
             root.addView(swipeSurface, new FrameLayout.LayoutParams(-1, -1));
 
-            LinearLayout footer = new LinearLayout(VerticalFeedActivity.this);
+            // These overlays do not consume taps or vertical swipe gestures.
+            playIndicator = label("▶", 33);
+            playIndicator.setGravity(Gravity.CENTER);
+            playIndicator.setBackground(rounded(0xB9000000, 50));
+            playIndicator.setVisibility(View.GONE);
+            root.addView(playIndicator, new FrameLayout.LayoutParams(dp(76), dp(76), Gravity.CENTER));
+
+            speedBadge = chip("2×", 17);
+            speedBadge.setVisibility(View.GONE);
+            FrameLayout.LayoutParams speedLp = new FrameLayout.LayoutParams(
+                    dp(86), dp(41), Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+            speedLp.topMargin = dp(105);
+            root.addView(speedBadge, speedLp);
+
+            footer = new LinearLayout(VerticalFeedActivity.this);
             footer.setOrientation(LinearLayout.VERTICAL);
             footer.setPadding(dp(18), dp(12), dp(18), dp(39));
-            footer.setBackgroundColor(0x77000000);
+            footer.setBackgroundColor(0x33000000);
             caption = label("", 16);
             caption.setMaxLines(2);
             caption.setEllipsize(android.text.TextUtils.TruncateAt.END);
             caption.setTypeface(null, android.graphics.Typeface.BOLD);
             footer.addView(caption, new LinearLayout.LayoutParams(-1, -2));
-            TextView hint = label("↑ Berikutnya      ↓ Sebelumnya     Tahan: 2×", 11);
+            hint = label("↑ Berikutnya      ↓ Sebelumnya     Tahan kiri/kanan: 2×", 11);
             hint.setTextColor(0xFFD0DAE7);
+            hint.setVisibility(View.GONE);
             LinearLayout.LayoutParams hintLp = new LinearLayout.LayoutParams(-1, -2);
             hintLp.topMargin = dp(6);
             footer.addView(hint, hintLp);
@@ -640,7 +694,10 @@ public final class VerticalFeedActivity extends Activity implements TelegramRepo
                     return true;
                 }
                 @Override public void onLongPress(MotionEvent e) {
-                    if (active == FeedHolder.this && player.isPlaying()) longSpeed(FeedHolder.this, true);
+                    if (active == FeedHolder.this && player.isPlaying()) {
+                        speedBadge.setText(e.getX() < root.getWidth() / 2f ? "◀ 2×" : "2× ▶");
+                        longSpeed(FeedHolder.this, true);
+                    }
                 }
                 @Override public boolean onSingleTapConfirmed(MotionEvent e) {
                     togglePlay(FeedHolder.this);
@@ -658,6 +715,25 @@ public final class VerticalFeedActivity extends Activity implements TelegramRepo
                 return true;
             };
             swipeSurface.setOnTouchListener(touch);
+        }
+
+        void showPlayback(boolean playing) {
+            ui.removeCallbacks(hidePlayIndicator);
+            playIndicator.setText("▶");
+            playIndicator.setVisibility(View.VISIBLE);
+            if (playing) ui.postDelayed(hidePlayIndicator, 700);
+            caption.setVisibility(playing ? View.GONE : View.VISIBLE);
+            hint.setVisibility(View.GONE);
+            footer.setBackgroundColor(playing ? 0x33000000 : 0x77000000);
+        }
+
+        void resetPlaybackUi() {
+            ui.removeCallbacks(hidePlayIndicator);
+            playIndicator.setVisibility(View.GONE);
+            speedBadge.setVisibility(View.GONE);
+            caption.setVisibility(View.VISIBLE);
+            hint.setVisibility(View.GONE);
+            footer.setBackgroundColor(0x33000000);
         }
 
         void showStatus(String message) {
