@@ -87,24 +87,28 @@ public final class MainActivity extends Activity implements TelegramRepository.L
         root = new FrameLayout(this);
         root.setBackgroundColor(BG);
         setContentView(root);
-        repo = TelegramRepository.get(getApplicationContext());
-        try {
-            repo.bind(this);
-            if (repo.hasCachedGallery()) renderGallery();
-            if (repo.hasApiCredentials()) repo.connect();
-            else if (currentStage == null) renderAuth(TelegramRepository.Stage.SETUP, "");
-        } catch (Exception e) {
-            showFailure(e.getMessage());
-        }
+        // Show the app lock before loading TDLib, catalog or thousands of gallery rows.
+        AppLock.gate(this);
     }
 
     @Override protected void onResume() {
         super.onResume();
-        if (repo != null) {
+        AppLock.gate(this);
+        if (!AppLock.isUnlocked()) return;
+        if (repo == null) {
+            try {
+                repo = TelegramRepository.get(getApplicationContext());
+                repo.bind(this);
+                if (repo.hasCachedGallery()) renderGallery();
+                if (repo.hasApiCredentials()) repo.connect();
+                else if (currentStage == null) renderAuth(TelegramRepository.Stage.SETUP, "");
+            } catch (Exception e) {
+                showFailure(e.getMessage());
+            }
+        } else {
             repo.bind(this);
             if (galleryVisible) refreshGrid();
         }
-        AppLock.gate(this);
     }
 
     @Override protected void onDestroy() {
