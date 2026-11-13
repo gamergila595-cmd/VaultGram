@@ -12,10 +12,12 @@ permissions:
 jobs:
   android:
     runs-on: ubuntu-latest
-    env:
-      VG_VERSION_CODE: ${{ github.run_number + 10000 }}
-      VG_VERSION_NAME: 2.0.${{ github.run_number }}
     steps:
+      - name: Set monotonic APK version
+        shell: bash
+        run: |
+          echo "VG_VERSION_CODE=$((10000 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
+          echo "VG_VERSION_NAME=2.0.$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with:
