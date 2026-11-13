@@ -2,6 +2,10 @@ plugins {
     id 'com.android.application'
 }
 
+def hasReleaseSigning = ['VG_KEYSTORE_PATH','VG_KEYSTORE_PASSWORD','VG_KEY_ALIAS','VG_KEY_PASSWORD'].every {
+    System.getenv(it) != null && !System.getenv(it).isEmpty()
+}
+
 android {
     namespace 'id.vaultgram.app'
     compileSdk 35
@@ -10,8 +14,8 @@ android {
         applicationId 'id.vaultgram.app'
         minSdk 26
         targetSdk 35
-        versionCode 7
-        versionName '1.5.0-beta1'
+        versionCode Integer.parseInt(System.getenv('VG_VERSION_CODE') ?: '8')
+        versionName System.getenv('VG_VERSION_NAME') ?: '1.5.1'
         ndk { abiFilters 'arm64-v8a', 'armeabi-v7a' }
     }
 
@@ -20,13 +24,27 @@ android {
         targetCompatibility JavaVersion.VERSION_17
     }
     buildFeatures { aidl true }
+
+    signingConfigs {
+        release {
+            if (hasReleaseSigning) {
+                storeFile file(System.getenv('VG_KEYSTORE_PATH'))
+                storePassword System.getenv('VG_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('VG_KEY_ALIAS')
+                keyPassword System.getenv('VG_KEY_PASSWORD')
+            }
+        }
+    }
+
     buildTypes {
-        release { minifyEnabled false }
+        release {
+            minifyEnabled false
+            if (hasReleaseSigning) signingConfig signingConfigs.release
+        }
     }
 }
 
 dependencies {
-    // Precompiled TDLib JNI for Android (includes org.drinkless.tdlib Java API).
     implementation 'io.github.tdlib-android:core:0.1.1'
     implementation 'androidx.viewpager2:viewpager2:1.1.0'
     implementation 'dev.rikka.shizuku:api:13.1.5'
