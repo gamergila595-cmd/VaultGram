@@ -57,18 +57,19 @@ import java.util.concurrent.Executors;
 
 /** Android UI built with the SDK view system; only one TDLib bot conversation appears. */
 public final class MainActivity extends Activity implements TelegramRepository.Listener {
-    private static final int BG = Color.rgb(10, 16, 32);
-    private static final int PANEL = Color.rgb(23, 34, 54);
-    private static final int PANEL2 = Color.rgb(30, 43, 64);
+    private static final int BG = Color.rgb(12, 17, 25);
+    private static final int PANEL = Color.rgb(26, 32, 45);
+    private static final int PANEL2 = Color.rgb(30, 37, 51);
     private static final int TEXT = Color.rgb(240, 244, 251);
     private static final int MUTED = Color.rgb(148, 163, 184);
-    private static final int ACCENT = Color.rgb(107, 224, 202);
+    private static final int ACCENT = Color.rgb(183, 164, 236);
     private static final int SCAN_PERMISSION = 614;
     private static final int BACKUP_CREATE = 2111;
     private static final int BACKUP_OPEN = 2112;
     private boolean backupWithVideos;
     private String backupPassword;
     private int sortBy;
+    private TextView sortBadge;
     private final int[] filters = {0, 1, 2};
     private FrameLayout root;
     private TelegramRepository repo;
@@ -253,165 +254,69 @@ public final class MainActivity extends Activity implements TelegramRepository.L
         root.removeAllViews();
         LinearLayout page = column();
         page.setBackgroundColor(BG);
-        page.setPadding(dp(17), dp(12), dp(17), dp(10));
+        page.setPadding(dp(17), dp(12), dp(17), dp(8));
         root.addView(page, new FrameLayout.LayoutParams(-1, -1));
 
-        LinearLayout header = row();
-        header.setGravity(Gravity.CENTER_VERTICAL);
-        TextView glyph = label("▶", 19, BG, true);
-        glyph.setGravity(Gravity.CENTER);
-        glyph.setBackground(round(ACCENT, 13));
-        header.addView(glyph, new LinearLayout.LayoutParams(dp(43), dp(43)));
-        LinearLayout brand = column();
-        LinearLayout.LayoutParams brandLp = new LinearLayout.LayoutParams(0, -2, 1);
-        brandLp.leftMargin = dp(12);
-        header.addView(brand, brandLp);
-        brand.addView(label("VaultGram", 24, TEXT, true));
-        brand.addView(label("GALERI VIDEO BOT", 10, ACCENT, true));
-        TextView settings = label("⚙", 25, ACCENT, true);
-        settings.setGravity(Gravity.CENTER);
-        settings.setBackground(round(PANEL, 14));
-        LinearLayout.LayoutParams lockLp = new LinearLayout.LayoutParams(dp(44), dp(44));
-        lockLp.rightMargin = dp(8);
-        header.addView(settings, lockLp);
-        settings.setOnClickListener(v -> openSettings());
-        TextView refresh = label("↻", 30, TEXT, true);
-        refresh.setGravity(Gravity.CENTER);
-        refresh.setBackground(round(PANEL, 14));
-        LinearLayout.LayoutParams refreshLp = new LinearLayout.LayoutParams(dp(44), dp(44));
-        header.addView(refresh, refreshLp);
-        refresh.setOnClickListener(v -> {
-            if (repo.hasBot()) repo.syncRecent(); else promptBot();
-        });
-        refresh.setOnLongClickListener(v -> {
-            new AlertDialog.Builder(this).setTitle("Sinkronisasi penuh?")
-                .setMessage("Baca ulang seluruh riwayat. Galeri lama tetap ditampilkan dan status unduhan tidak dihapus.")
-                .setNegativeButton("Batal",null).setPositiveButton("Mulai",(d,w)->repo.fullSync()).show();
-            return true;
-        });
-        page.addView(header);
+        // Keep the approved V3 gallery: search, sort, thumbnail grid and navigation.
+        // Telegram sync and advanced actions are still available under Settings.
+        botText = null;
+        accountText = null;
+        autoWifiText = null;
+        filterTabs = null;
+        statsText = label("", 11, MUTED, false);
+        statusText = label("", 11, MUTED, false);
 
-        LinearLayout source = row();
-        source.setGravity(Gravity.CENTER_VERTICAL);
-        source.setPadding(dp(16), dp(12), dp(14), dp(12));
-        source.setBackground(round(PANEL, 21));
-        LinearLayout.LayoutParams srcLp = new LinearLayout.LayoutParams(-1, -2);
-        srcLp.topMargin = dp(12);
-        page.addView(source, srcLp);
-        LinearLayout left = column();
-        source.addView(left, new LinearLayout.LayoutParams(0, -2, 1));
-        left.addView(label("BOT TERHUBUNG", 10, ACCENT, true));
-        botText = label(repo.bot().isEmpty() ? "Pilih bot Telegram" : "@" + repo.bot(), 16, TEXT, true);
-        botText.setSingleLine(true);
-        botText.setEllipsize(TextUtils.TruncateAt.END);
-        LinearLayout.LayoutParams botLp = new LinearLayout.LayoutParams(-1, -2);
-        botLp.topMargin = dp(6);
-        left.addView(botText, botLp);
-        accountText = label("1 akun Telegram terhubung", 12, MUTED, false);
-        LinearLayout.LayoutParams accLp = new LinearLayout.LayoutParams(-1, -2);
-        accLp.topMargin = dp(5);
-        left.addView(accountText, accLp);
-        TextView choose = label("UBAH  ›", 11, ACCENT, true);
-        source.addView(choose);
-        source.setOnClickListener(v -> promptBot());
-
-        LinearLayout autoRow = row();
-        autoRow.setGravity(Gravity.CENTER_VERTICAL);
-        autoRow.setPadding(dp(13), dp(8), dp(13), dp(8));
-        autoRow.setBackground(round(PANEL, 14));
-        LinearLayout.LayoutParams autoLp = new LinearLayout.LayoutParams(-1, -2);
-        autoLp.topMargin = dp(7);
-        page.addView(autoRow, autoLp);
-        TextView description = label("Auto-download video baru", 12, TEXT, true);
-        autoRow.addView(description, new LinearLayout.LayoutParams(0, -2, 1));
-        autoWifiText = label("", 11, ACCENT, true);
-        autoRow.addView(autoWifiText);
-        autoRow.setOnClickListener(v -> {
-            repo.setAutoWifiEnabled(!repo.autoWifiEnabled());
-            updateAutoWifi();
-        });
-        updateAutoWifi();
-
-        LinearLayout scanRow = row();
-        scanRow.setGravity(Gravity.CENTER_VERTICAL);
-        statsText = label("0 video", 13, MUTED, false);
-        scanRow.addView(statsText, new LinearLayout.LayoutParams(0, -2, 1));
-        TextView scan = label("Pindai unduhan", 12, ACCENT, true);
-        scan.setPadding(dp(8), dp(12), dp(3), dp(12));
-        scanRow.addView(scan);
-        scan.setOnClickListener(v -> scanDownloads());
-        LinearLayout.LayoutParams statsLp = new LinearLayout.LayoutParams(-1, -2);
-        statsLp.topMargin = dp(15);
-        statsLp.bottomMargin = dp(10);
-        page.addView(scanRow, statsLp);
-
-        LinearLayout tabs = row();
-        filterTabs = new TextView[3];
-        String[] labels = {"Semua", "Diunduh", "Belum"};
-        for (int i = 0; i < 3; i++) {
-            final int f = i;
-            TextView tab = label(labels[i], 13, MUTED, true);
-            tab.setGravity(Gravity.CENTER);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(42), 1);
-            if (i > 0) lp.leftMargin = dp(8);
-            tabs.addView(tab, lp);
-            filterTabs[i] = tab;
-            tab.setOnClickListener(v -> { filter = filters[f]; updateTabs(); refreshGrid(); });
-        }
-        page.addView(tabs);
-        updateTabs();
-        HorizontalScrollView shortcuts = new HorizontalScrollView(this);
-        shortcuts.setHorizontalScrollBarEnabled(false);
-        LinearLayout actions = row();
-        actions.setPadding(0,dp(12),0,dp(2));
-        addChip(actions,"Cache Telegram",this::openTelegramCache);
-        addChip(actions,"▶ Feed",()->openFeed(false));
-        addChip(actions,"⇄ Acak",()->openFeed(true));
-        addChip(actions,"★ Favorit",()->setExtraFilter(3));
-        addChip(actions,"◷ Belum dilihat",()->setExtraFilter(4));
-        addChip(actions,"◫ Sampah",()->setExtraFilter(5));
-        addChip(actions,"◉ Tersembunyi",()->setExtraFilter(6));
-        addChip(actions,"◷ Riwayat",this::showHistory);
-        addChip(actions,"▣ Vault privat",()->startActivity(new Intent(this,PrivateMediaActivity.class)));
-        addChip(actions,"↓ Massal",this::downloadBatch);
-        addChip(actions,"↓ Antrean",this::downloadManager);
-        shortcuts.addView(actions);
-        page.addView(shortcuts);
-
-        EditText search = input("Cari nama video…", InputType.TYPE_CLASS_TEXT, searchText);
+        LinearLayout toolbar = row();
+        toolbar.setGravity(Gravity.CENTER_VERTICAL);
+        EditText search = input("Cari video...", InputType.TYPE_CLASS_TEXT, searchText);
         search.setSingleLine(true);
-        search.setCompoundDrawablePadding(dp(9));
-        LinearLayout.LayoutParams searchLp = new LinearLayout.LayoutParams(-1, dp(47));
-        searchLp.topMargin = dp(15);
-        searchLp.bottomMargin = dp(5);
-        page.addView(search, searchLp);
+        toolbar.addView(search, new LinearLayout.LayoutParams(0, dp(47), 1));
         search.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int a, int c, int d) {}
             @Override public void onTextChanged(CharSequence s, int a, int b, int c) {
                 searchText = s.toString(); refreshGrid();
             }
-            @Override public void afterTextChanged(Editable editable) {}
+            @Override public void afterTextChanged(Editable e) {}
         });
+        String[] sortNames = {"Terbaru","Terlama","Terbesar","Terkecil","Acak"};
+        sortBadge = label("↕ " + sortNames[Math.max(0, Math.min(sortBy, sortNames.length - 1))], 12, TEXT, true);
+        sortBadge.setGravity(Gravity.CENTER);
+        sortBadge.setBackground(round(PANEL, 13));
+        LinearLayout.LayoutParams sortLp = new LinearLayout.LayoutParams(dp(99), dp(47));
+        sortLp.leftMargin = dp(9);
+        toolbar.addView(sortBadge, sortLp);
+        sortBadge.setOnClickListener(v -> sortDialog());
+        page.addView(toolbar, new LinearLayout.LayoutParams(-1, -2));
 
         GridView grid = new GridView(this);
         grid.setNumColumns(2);
-        grid.setVerticalSpacing(dp(11));
+        grid.setVerticalSpacing(dp(13));
         grid.setHorizontalSpacing(dp(12));
         grid.setStretchMode(GridView.STRETCH_COLUMN_WIDTH);
         grid.setClipToPadding(false);
-        grid.setPadding(0, dp(5), 0, dp(5));
+        grid.setPadding(0, dp(15), 0, dp(7));
         grid.setSelector(android.R.color.transparent);
         adapter = new GalleryAdapter();
         grid.setAdapter(adapter);
         page.addView(grid, new LinearLayout.LayoutParams(-1, 0, 1));
 
-        statusText = label("Siap", 11, MUTED, false);
-        statusText.setSingleLine(true);
-        statusText.setEllipsize(TextUtils.TruncateAt.END);
-        statusText.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout.LayoutParams stLp = new LinearLayout.LayoutParams(-1, dp(27));
-        stLp.topMargin = dp(3);
-        page.addView(statusText, stLp);
+        LinearLayout bottom = row();
+        bottom.setGravity(Gravity.CENTER_VERTICAL);
+        TextView home = label("⌂  Beranda", 12, filter == 0 ? TEXT : MUTED, true);
+        TextView saved = label("☆  Tersimpan", 12, filter == 3 ? TEXT : MUTED, true);
+        TextView settings = label("⚙  Pengaturan", 12, MUTED, true);
+        TextView[] entries = {home, saved, settings};
+        for (TextView entry : entries) {
+            entry.setGravity(Gravity.CENTER);
+            entry.setBackground(round(PANEL, 12));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(50), 1);
+            lp.setMargins(dp(3), dp(4), dp(3), 0);
+            bottom.addView(entry, lp);
+        }
+        home.setOnClickListener(v -> {filter = 0; renderGallery();});
+        saved.setOnClickListener(v -> {filter = 3; renderGallery();});
+        settings.setOnClickListener(v -> openSettings());
+        page.addView(bottom);
         refreshGrid();
     }
 
@@ -697,7 +602,7 @@ public final class MainActivity extends Activity implements TelegramRepository.L
     private void sortDialog(){
         String[] options={"Terbaru","Terlama","Terbesar","Terkecil","Acak"};
         new AlertDialog.Builder(this).setTitle("Urutkan galeri")
-            .setItems(options,(d,w)->{sortBy=w;refreshGrid();}).show();
+            .setItems(options,(d,w)->{sortBy=w;if(sortBadge!=null)sortBadge.setText("↕ "+options[w]);refreshGrid();}).show();
     }
     private void openSettings(){
         String[] choices={"Kunci VaultGram sekarang","Ganti password","Fingerprint: "+(AppLock.biometricEnabled(this)?"Aktif":"Mati"),
@@ -708,7 +613,10 @@ public final class MainActivity extends Activity implements TelegramRepository.L
             "Penyimpanan & batas cache","Backup ringan (terenkripsi)","Backup lengkap + video","Pulihkan backup",
             "Status jaringan & sinkronisasi",
             "Hemat data (preload): "+(ViewerExtras.dataSaver(this)?"Aktif":"Mati"),
-            "Lihat Vault privat & potret"};
+            "Lihat Vault privat & potret",
+            "Pilih bot Telegram","Auto-download Wi-Fi: "+(repo.autoWifiEnabled()?"Aktif":"Mati"),
+            "Pindai video di Downloads","Cache Telegram","Putar feed acak",
+            "Riwayat tontonan","Belum diunduh","Video tersembunyi","Sampah"};
         new AlertDialog.Builder(this).setTitle("Pengaturan VaultGram")
             .setItems(choices,(d,w)->{
                 switch(w){
@@ -731,6 +639,15 @@ public final class MainActivity extends Activity implements TelegramRepository.L
                         .setPositiveButton("Tutup",null).show();break;
                     case 16:ViewerExtras.setDataSaver(this,!ViewerExtras.dataSaver(this));break;
                     case 17:startActivity(new Intent(this,PrivateMediaActivity.class));break;
+                    case 18:promptBot();break;
+                    case 19:repo.setAutoWifiEnabled(!repo.autoWifiEnabled());break;
+                    case 20:scanDownloads();break;
+                    case 21:openTelegramCache();break;
+                    case 22:openFeed(true);break;
+                    case 23:showHistory();break;
+                    case 24:setExtraFilter(2);break;
+                    case 25:setExtraFilter(6);break;
+                    case 26:setExtraFilter(5);break;
                 }
             }).setNegativeButton("Tutup",null).show();
     }
